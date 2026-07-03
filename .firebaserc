@@ -1,0 +1,13 @@
+{
+  "projects": {
+    "default": "refined-legend-420223"
+  },
+  "targets": {},
+  "etags": {
+    "refined-legend-420223": {
+      "extensionInstances": {
+        "firestore-send-email": "7af31596089a19a694a838240f42db157c4e6b89aa11dd2d03c7d228a43f4d2c"
+      }
+    }
+  }
+}

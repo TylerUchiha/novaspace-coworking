@@ -1,0 +1,45 @@
+{
+  "name": "novaspace-coworking-planner",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "emulators": "firebase emulators:start --import=./.emulator-data --export-on-exit",
+    "dev:emulators": "concurrently \"npm run emulators\" \"cross-env VITE_USE_FIREBASE_EMULATORS=true npm run dev\"",
+    "functions:build": "npm --prefix functions run build",
+    "functions:deploy": "firebase deploy --only functions",
+    "deploy:remote-config": "node scripts/deploy-remote-config.mjs",
+    "setup:secrets": "node scripts/setup-secrets.mjs",
+    "setup:firestore-backup": "node scripts/setup-firestore-backup.mjs",
+    "deploy:rules": "firebase deploy --project refined-legend-420223 --only firestore:ai-studio-novaspacecoworki-863fc540-4213-48e8-8f94-f914c1f6fe77,storage",
+    "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "deploy:auth": "firebase deploy --only auth",
+    "configure:phone-auth": "node scripts/configure-phone-auth.cjs",
+    "deploy:all": "npm run functions:build && firebase deploy --project refined-legend-420223"
+  },
+  "dependencies": {
+    "@firebase/crashlytics": "0.0.1-eap-crashlytics.558ee841d",
+    "@google/genai": "^1.38.0",
+    "firebase": "^12.15.0",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^0.562.0",
+    "motion": "^12.38.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@firebase/eslint-plugin-security-rules": "^0.0.2",
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.3",
+    "cross-env": "^7.0.3",
+    "tailwindcss": "^4.3.2",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

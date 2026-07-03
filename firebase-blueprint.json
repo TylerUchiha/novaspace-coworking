@@ -1,0 +1,128 @@
+{
+  "entities": {
+    "Vendor": {
+      "title": "Vendor",
+      "description": "A co-working space network or brand.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "logo": { "type": "string" },
+        "description": { "type": "string" },
+        "color": { "type": "string" },
+        "locationCount": { "type": "number" },
+        "access": { "type": "string" },
+        "cancellationPolicy": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["id", "name", "logo", "description", "color", "locationCount"]
+    },
+    "LocationData": {
+      "title": "Location",
+      "description": "A physical building or branch for a vendor.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "vendorId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "image": { "type": "string" },
+        "mapUrl": { "type": "string" },
+        "address": { "type": "string" },
+        "city": { "type": "string" },
+        "staffAccessCode": { "type": "string" },
+        "cancellationPolicy": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["id", "vendorId", "name"]
+    },
+    "Room": {
+      "title": "Room",
+      "description": "A bookable space within a location floor.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "capacity": { "type": "number" },
+        "status": { "type": "string" },
+        "amenities": { "type": "array", "items": { "type": "string" } },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "pricePerHour": { "type": "number" },
+        "images": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "name", "type", "capacity", "status", "pricePerHour"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "A user of the application.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "email": { "type": "string" },
+        "pfp": { "type": "string" },
+        "phone": { "type": "string" },
+        "credits": { "type": "number" },
+        "profession": { "type": "string" }
+      },
+      "required": ["uid", "name", "email", "credits"]
+    },
+    "Reservation": {
+      "title": "Reservation",
+      "description": "A booking made by a user for a room.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "roomId": { "type": "string" },
+        "locationId": { "type": "string" },
+        "floorId": { "type": "string" },
+        "vendorId": { "type": "string" },
+        "date": { "type": "string" },
+        "time": { "type": "string" },
+        "duration": { "type": "number" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "declined"] },
+        "orderStatus": { "type": "string", "enum": ["pending", "confirmed", "cancelled"] },
+        "createdAt": { "type": "number" },
+        "totalPrice": { "type": "number" },
+        "paymentMethod": { "type": "string" }
+      },
+      "required": ["id", "roomId", "locationId", "floorId", "vendorId", "date", "time", "duration", "userId", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/vendors/{vendorId}": {
+      "schema": "Vendor",
+      "description": "All registered space vendors."
+    },
+    "/locations/{locationId}": {
+      "schema": "LocationData",
+      "description": "All physical locations."
+    },
+    "/locations/{locationId}/floors/{floorId}/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Rooms available inside a floor of a location."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Public and private user profiles. Split collection could be used, but since users only see their own profile or public info, we'll secure it with owner rules."
+    },
+    "/reservations/{reservationId}": {
+      "schema": "Reservation",
+      "description": "All bookings/reservations."
+    }
+  }
+}

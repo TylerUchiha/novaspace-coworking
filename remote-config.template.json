@@ -1,0 +1,36 @@
+{
+  "parameters": {
+    "feature_nova_bot_enabled": {
+      "defaultValue": { "value": "true" },
+      "description": "Show Nova Bot chat widget on vendor/location selection",
+      "valueType": "BOOLEAN"
+    },
+    "feature_phone_auth_enabled": {
+      "defaultValue": { "value": "true" },
+      "description": "Enable phone number collection during sign-up",
+      "valueType": "BOOLEAN"
+    },
+    "feature_credits_topup_enabled": {
+      "defaultValue": { "value": "true" },
+      "description": "Show credits top-up UI for customers",
+      "valueType": "BOOLEAN"
+    },
+    "min_top_up_amount": {
+      "defaultValue": { "value": "200" },
+      "description": "Minimum credit top-up amount in EGP",
+      "valueType": "NUMBER"
+    },
+    "default_cancellation_policy_text": {
+      "defaultValue": {
+        "value": "Cancellations made more than 24 hours before the booking start time receive a full refund in NovaSpace credits. Cancellations within 24 hours are non-refundable. No-shows forfeit the full booking amount."
+      },
+      "description": "Default cancellation policy shown when a vendor/location has none set",
+      "valueType": "STRING"
+    },
+    "owner_passcode": {
+      "defaultValue": { "value": "" },
+      "description": "Owner master passcode (overrides Secret Manager when non-empty). Leave empty to use OWNER_PASSCODE secret.",
+      "valueType": "STRING"
+    }
+  }
+}

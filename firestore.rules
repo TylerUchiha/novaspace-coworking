@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function hasStaffClaim() {
+      return isSignedIn() && request.auth.token.role in ['owner', 'employee'];
+    }
+
+    function isStaffFromProfile() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['owner', 'employee'];
+    }
+
+    function isStaff() {
+      return hasStaffClaim() || isStaffFromProfile();
+    }
+
+    function isValidVendor(data) {
+      return data.keys().hasAll(['id', 'name', 'logo', 'description', 'color', 'locationCount'])
+        && data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.logo is string && data.logo.size() <= 500
+        && data.description is string && data.description.size() <= 1000
+        && data.color is string && data.color.size() <= 32
+        && data.locationCount is number;
+    }
+
+    function isValidLocation(data) {
+      return data.keys().hasAll(['id', 'vendorId', 'name', 'floors'])
+        && data.id is string && data.id.size() <= 128
+        && data.vendorId is string && data.vendorId.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.floors is list;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'credits'])
+        && data.uid is string && data.uid.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.email is string && data.email.size() <= 256
+        && data.credits is number;
+    }
+
+    function isValidReservation(data) {
+      return data.keys().hasAll(['id', 'roomId', 'locationId', 'floorId', 'vendorId', 'date', 'time', 'duration', 'userId', 'status', 'createdAt'])
+        && data.id is string && data.id.size() <= 128
+        && data.roomId is string && data.roomId.size() <= 128
+        && data.locationId is string && data.locationId.size() <= 128
+        && data.floorId is string && data.floorId.size() <= 128
+        && data.vendorId is string && data.vendorId.size() <= 128
+        && data.date is string && data.date.size() <= 32
+        && data.time is string && data.time.size() <= 32
+        && data.duration is number
+        && data.userId is string && data.userId.size() <= 128
+        && data.status is string && data.status.size() <= 32
+        && data.createdAt is number;
+    }
+
+    match /meta/catalog {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /vendors/{vendorId} {
+      allow get, list: if true;
+      allow create, update: if isStaff() && isValidId(vendorId) && isValidVendor(incoming());
+      allow delete: if isStaff() && isValidId(vendorId);
+    }
+
+    match /locations/{locationId} {
+      allow get, list: if true;
+      allow create, update: if isStaff() && isValidId(locationId) && isValidLocation(incoming());
+      allow delete: if isStaff() && isValidId(locationId);
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll(['id', 'name', 'phone', 'pfp', 'pinCode', 'shifts'])
+        && data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() <= 128
+        && data.phone is string && data.phone.size() <= 32
+        && data.pfp is string && data.pfp.size() <= 500
+        && data.pinCode is string && data.pinCode.size() <= 8
+        && data.shifts is list;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isStaff());
+      allow list: if isStaff();
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasAll(['uid', 'name', 'email', 'credits'])
+        && (!('emailVerified' in incoming()) || incoming().emailVerified == false);
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.data.uid == resource.data.uid
+        && (!('emailVerified' in incoming()) || incoming().emailVerified == existing().emailVerified);
+      allow delete: if false;
+    }
+
+    match /employees/{employeeId} {
+      allow read: if isStaff();
+      allow create, update: if isStaff() && isValidId(employeeId) && isValidEmployee(incoming());
+      allow delete: if isStaff() && isValidId(employeeId);
+    }
+
+    match /reservations/{reservationId} {
+      allow get: if isSignedIn() && isValidId(reservationId)
+        && (existing().userId == request.auth.uid || isStaff());
+      allow list: if isSignedIn();
+      allow create: if false;
+      allow update: if isStaff() && isValidId(reservationId);
+      allow delete: if isStaff() && isValidId(reservationId);
+    }
+
+    match /users/{userId}/transactions/{txId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      allow create, update, delete: if false;
+    }
+
+    match /users/{userId}/fcmTokens/{tokenId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      allow create, update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(tokenId)
+        && incoming().keys().hasAll(['token', 'updatedAt'])
+        && incoming().token is string && incoming().token.size() <= 512;
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /analytics_events/{eventId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+    match /analytics_daily/{dateId} {
+      allow read: if isStaff();
+      allow write: if false;
+    }
+
+    match /mail/{mailId} {
+      allow read, write: if false;
+    }
+
+    match /emailVerifications/{uid} {
+      allow read, write: if false;
+    }
+  }
+}

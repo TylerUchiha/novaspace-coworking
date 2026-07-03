@@ -1,0 +1,22 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isStaff() {
+      return request.auth != null && request.auth.token.role in ['owner', 'employee'];
+    }
+
+    match /vendors/{vendorId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+
+    match /locations/{locationId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
