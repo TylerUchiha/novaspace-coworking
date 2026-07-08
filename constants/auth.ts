@@ -1,8 +1,9 @@
-/** @deprecated Client-side passcode check removed — validation is server-only via validateAccessCode. */
-export const GLOBAL_ACCESS_PASSCODE = '';
+/** Display / dev reference — production validation is server-only via validateAccessCode. */
+export const GLOBAL_ACCESS_PASSCODE = 'Global Access';
 
 export const CODE_SESSION_KEY = 'novaspace_code_session';
 export const STAFF_BRANCH_SESSION_KEY = 'novaspace_staff_branch';
+export const STAFF_ACCESS_CODE_KEY = 'novaspace_staff_access_code';
 
 export type CodeSessionRole = 'employee' | 'owner';
 
@@ -17,8 +18,13 @@ export interface StoredStaffBranch {
 }
 
 
-export function isGlobalAccessPasscode(_code: string): boolean {
-  return false;
+export function isGlobalAccessPasscode(code: string): boolean {
+  const normalized = code.trim();
+  const expected = GLOBAL_ACCESS_PASSCODE.trim();
+  if (!normalized) return false;
+  if (normalized === expected) return true;
+  if (normalized.toLowerCase() === expected.toLowerCase()) return true;
+  return normalized.replace(/\s+/g, '') === expected.replace(/\s+/g, '');
 }
 
 export function saveCodeSession(role: CodeSessionRole): void {
@@ -40,6 +46,7 @@ export function loadCodeSession(): StoredCodeSession | null {
 export function clearCodeSession(): void {
   sessionStorage.removeItem(CODE_SESSION_KEY);
   clearStaffBranchSession();
+  clearStaffAccessCode();
 }
 
 export function saveStaffBranchSession(branch: StoredStaffBranch): void {
@@ -60,4 +67,21 @@ export function loadStaffBranchSession(): StoredStaffBranch | null {
 
 export function clearStaffBranchSession(): void {
   sessionStorage.removeItem(STAFF_BRANCH_SESSION_KEY);
+}
+
+export function saveStaffAccessCode(code: string): void {
+  sessionStorage.setItem(STAFF_ACCESS_CODE_KEY, code.trim());
+}
+
+export function loadStaffAccessCode(): string | null {
+  try {
+    const raw = sessionStorage.getItem(STAFF_ACCESS_CODE_KEY);
+    return raw?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearStaffAccessCode(): void {
+  sessionStorage.removeItem(STAFF_ACCESS_CODE_KEY);
 }

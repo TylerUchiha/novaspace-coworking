@@ -1,6 +1,6 @@
 import { connectFunctionsEmulator, getFunctions, httpsCallable } from 'firebase/functions';
 import { app } from './firebase';
-import { Reservation } from '../types';
+import { Reservation, UserProfile } from '../types';
 import { traceAsync } from './firebaseMonitoring';
 
 export type AccessCodeResult = {
@@ -60,6 +60,28 @@ export async function seedCatalogRemote(): Promise<{ seeded: boolean; message?: 
   return result.data as { seeded: boolean; message?: string };
 }
 
+export async function saveCatalogLocationRemote(
+  location: Record<string, unknown>,
+): Promise<{ success: boolean; id: string }> {
+  const fn = httpsCallable<{ location: Record<string, unknown> }, { success: boolean; id: string }>(
+    functions,
+    'saveCatalogLocation',
+  );
+  const result = await fn({ location });
+  return result.data;
+}
+
+export async function saveCatalogVendorRemote(
+  vendor: Record<string, unknown>,
+): Promise<{ success: boolean; id: string }> {
+  const fn = httpsCallable<{ vendor: Record<string, unknown> }, { success: boolean; id: string }>(
+    functions,
+    'saveCatalogVendor',
+  );
+  const result = await fn({ vendor });
+  return result.data;
+}
+
 export async function createBookingRemote(input: CreateBookingInput): Promise<CreateBookingResult> {
   const fn = httpsCallable<CreateBookingInput, CreateBookingResult>(functions, 'createBooking');
   const result = await fn(input);
@@ -74,14 +96,44 @@ export async function cancelBookingRemote(reservationId: string): Promise<{ succ
 
 export async function updateReservationStatusRemote(
   reservationId: string,
-  status: Reservation['status'],
+  status?: Reservation['status'],
   orderStatus?: Reservation['orderStatus'],
 ): Promise<{ success: boolean }> {
   const fn = httpsCallable<
-    { reservationId: string; status: string; orderStatus?: string },
+    { reservationId: string; status?: string; orderStatus?: string },
     { success: boolean }
   >(functions, 'updateReservationStatus');
   const result = await fn({ reservationId, status, orderStatus });
+  return result.data;
+}
+
+export async function getStaffAccessCodeRemote(locationId: string): Promise<{ code: string }> {
+  const fn = httpsCallable<{ locationId: string }, { code: string }>(functions, 'getStaffAccessCode');
+  const result = await fn({ locationId });
+  return result.data;
+}
+
+export async function appendReservationOrderRemote(input: {
+  reservationId: string;
+  menuItems: { itemId: string; quantity: number; comment?: string; deliveryTime?: string }[];
+  totalPrice: number;
+  orderComment?: string;
+  paymentMethod?: string;
+}): Promise<{ success: boolean }> {
+  const fn = httpsCallable<typeof input, { success: boolean }>(functions, 'appendReservationOrder');
+  const result = await fn(input);
+  return result.data;
+}
+
+export async function syncReservationUserNameRemote(
+  name: string,
+  userId?: string,
+): Promise<{ success: boolean; updated: number }> {
+  const fn = httpsCallable<{ name: string; userId?: string }, { success: boolean; updated: number }>(
+    functions,
+    'syncReservationUserName',
+  );
+  const result = await fn({ name, userId });
   return result.data;
 }
 
@@ -107,6 +159,7 @@ export interface NovaBotChatResult {
   matchingTags: string[];
   matchingCities: string[];
   filterAction: 'replace' | 'append';
+  shouldApplyFilters: boolean;
 }
 
 export async function novaBotChatRemote(input: NovaBotChatInput): Promise<NovaBotChatResult> {
@@ -120,6 +173,24 @@ export async function novaBotChatRemote(input: NovaBotChatInput): Promise<NovaBo
 export async function supportChatRemote(message: string): Promise<{ reply: string }> {
   const fn = httpsCallable<{ message: string }, { reply: string }>(functions, 'supportChat');
   const result = await fn({ message });
+  return result.data;
+}
+
+export interface SubmitSupportInquiryInput {
+  name: string;
+  number: string;
+  email: string;
+  inquiry: string;
+}
+
+export async function submitSupportInquiryRemote(
+  input: SubmitSupportInquiryInput,
+): Promise<{ success: boolean }> {
+  const fn = httpsCallable<SubmitSupportInquiryInput, { success: boolean }>(
+    functions,
+    'submitSupportInquiry',
+  );
+  const result = await fn(input);
   return result.data;
 }
 
@@ -143,6 +214,35 @@ export async function registerFcmTokenRemote(token: string, platform = 'web'): P
 
 export async function unregisterFcmTokenRemote(token: string): Promise<{ success: boolean }> {
   const fn = httpsCallable<{ token: string }, { success: boolean }>(functions, 'unregisterFcmToken');
+  const result = await fn({ token });
+  return result.data;
+}
+
+export interface CreateWalkInMemberInput {
+  name: string;
+  email: string;
+  phone: string;
+}
+
+export interface CreateWalkInMemberResult {
+  uid: string;
+  profile: UserProfile;
+  created: boolean;
+}
+
+export async function createWalkInMemberRemote(
+  input: CreateWalkInMemberInput,
+): Promise<CreateWalkInMemberResult> {
+  const fn = httpsCallable<CreateWalkInMemberInput, CreateWalkInMemberResult>(
+    functions,
+    'createWalkInMember',
+  );
+  const result = await fn(input);
+  return result.data;
+}
+
+export async function verifyRecaptchaRemote(token: string): Promise<{ success: boolean }> {
+  const fn = httpsCallable<{ token: string }, { success: boolean }>(functions, 'verifyRecaptcha');
   const result = await fn({ token });
   return result.data;
 }

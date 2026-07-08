@@ -1,8 +1,9 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 import { db } from './db';
-import { notifyUser, sendPushToTokens } from './notifications';
+import { sendPushToTokens } from './notifications';
 import { recordAnalyticsEvent } from './transactionHelpers';
+import { sendUserEmailIfEnabled } from './emailNotifications';
 
 function timeToMinutes(timeStr: string): number {
   const [h, m] = timeStr.split(':').map(Number);
@@ -57,14 +58,30 @@ export const sendBookingReminders = onSchedule(
 
       const startMs = reservationStartMs(data.date as string, data.time as string);
       if (startMs >= windowStart && startMs <= windowEnd && data.userId) {
-        await notifyUser(
-          data.userId as string,
-          'Upcoming booking',
+        const userEmail = data.userEmail as string | undefined;
+        const subject = 'NovaSpace — booking reminder';
+        const lines = [
+          `Hi ${(data.userName as string) || 'there'},`,
           `Reminder: your booking on ${data.date} at ${data.time} starts in about an hour.`,
-          { reservationId: docSnap.id, type: 'booking_reminder' },
+        ];
+        const text = [subject, '', ...lines, '', '— NovaSpace'].join('\n');
+        const html = `
+          <div style="font-family:Inter,Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
+            <h2 style="color:#0f172a;margin:0 0 16px;font-size:22px;">Booking reminder</h2>
+            ${lines.map((line) => `<p style="margin:0 0 12px;color:#475569;line-height:1.6;">${line}</p>`).join('')}
+          </div>
+        `;
+        const emailed = await sendUserEmailIfEnabled(
+          data.userId as string,
+          userEmail,
+          subject,
+          html,
+          text,
         );
-        await docSnap.ref.update({ reminderSentAt: now });
-        sent++;
+        if (emailed) {
+          await docSnap.ref.update({ reminderSentAt: now });
+          sent++;
+        }
       }
     }
 

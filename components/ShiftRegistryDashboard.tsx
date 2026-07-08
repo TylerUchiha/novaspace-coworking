@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Reservation, Employee, EmployeeShift } from '../types';
 import { Clock, CheckSquare, Download, Play, CheckCircle2, LogOut, ShieldAlert, Coffee, StopCircle, KeyRound, User as UserIcon, Plus, Trash2, Edit2, Save, X, ShieldCheck, Calendar as CalendarIcon, Clock as ClockIcon, Coffee as CoffeeIcon } from 'lucide-react';
-import { jsPDF } from 'jspdf';
 import { motion, AnimatePresence } from 'motion/react';
+import { useImageCropUpload } from './ImageCropPortal';
 
 interface ShiftRegistryDashboardProps {
   allEmployees: Employee[];
@@ -10,8 +10,8 @@ interface ShiftRegistryDashboardProps {
   reservations: Reservation[];
   isGlobalAccess: boolean;
   clockedInEmployeeIds: string[];
-  setClockedInEmployeeIds: React.Dispatch<React.SetStateAction<string[]>>;
   viewMode?: "analytics" | "management";
+  pinEntrySuspended?: boolean;
 }
 
 const formatTime = (ms: number) => {
@@ -55,13 +55,11 @@ function StaffShiftCard({
   employee, 
   allEmployees, 
   setAllEmployees,
-  setClockedInEmployeeIds 
 }: { 
   key?: any;
   employee: Employee;
   allEmployees: Employee[];
   setAllEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
-  setClockedInEmployeeIds: React.Dispatch<React.SetStateAction<string[]>>;
 }) {
   const [currentTimer, setCurrentTimer] = useState(0);
   const [currentBreakTimer, setCurrentBreakTimer] = useState(0);
@@ -128,7 +126,6 @@ function StaffShiftCard({
         })
       };
     }));
-    setClockedInEmployeeIds(prev => prev.filter(id => id !== employee.id));
   };
 
   return (
@@ -203,6 +200,17 @@ function StaffManagementOwnerView({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<{name: string, phone: string, pinCode: string, pfp: string}>({ name: '', phone: '', pinCode: '', pfp: '' });
+
+  const avatarCrop = useImageCropUpload({
+    aspect: 1,
+    onCrop: async (file) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setEditForm((prev) => ({ ...prev, pfp: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    },
+  });
 
   const handleEdit = (emp: Employee) => {
     setEditingId(emp.id);
@@ -284,13 +292,8 @@ function StaffManagementOwnerView({
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Avatar Picture</label>
                       <input type="file" accept="image/*" onChange={e => {
                         const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            setEditForm({...editForm, pfp: reader.result as string});
-                          };
-                          reader.readAsDataURL(file);
-                        }
+                        e.target.value = '';
+                        if (file) avatarCrop.queueFile(file);
                       }} className="w-full text-xs font-bold text-slate-500 border-b border-slate-200 outline-none focus:border-blue-500 py-1" />
                     </div>
                     <div className="flex justify-end gap-2 mt-2">
@@ -320,6 +323,7 @@ function StaffManagementOwnerView({
           ))}
         </div>
       </div>
+      {avatarCrop.cropPortal}
     </div>
   );
 }
@@ -427,7 +431,7 @@ function StaffAnalyticsScheduleView({
         <motion.div 
           layout 
           className={`grid gap-px bg-slate-200 border border-slate-200 rounded-2xl overflow-hidden shadow-sm
-            ${scheduleView === 'daily' ? 'grid-cols-1 max-w-sm' : scheduleView === 'weekly' ? 'grid-cols-3 md:grid-cols-7' : scheduleView === 'monthly' ? 'grid-cols-5 md:grid-cols-10' : 'grid-cols-2 md:grid-cols-4'}
+            ${scheduleView === 'weekly' ? 'grid-cols-3 md:grid-cols-7' : scheduleView === 'monthly' ? 'grid-cols-5 md:grid-cols-10' : 'grid-cols-2 md:grid-cols-4'}
           `}
         >
           <AnimatePresence mode="popLayout">
@@ -439,7 +443,7 @@ function StaffAnalyticsScheduleView({
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.2 }}
                 key={item.label}
-                className={`bg-white relative group transition-colors flex flex-col items-center justify-center text-center p-2 md:p-4 ${selectedPeriod?.label === item.label ? 'bg-blue-50 z-10' : 'hover:bg-slate-50'} ${scheduleView === 'daily' ? 'py-12' : 'aspect-square'}`}
+                className={`bg-white relative group transition-colors flex flex-col items-center justify-center text-center p-2 md:p-4 ${selectedPeriod?.label === item.label ? 'bg-blue-50 z-10' : 'hover:bg-slate-50'} aspect-square`}
               >
                 <span className={`text-xs md:text-sm font-bold ${selectedPeriod?.label === item.label ? 'text-blue-700' : 'text-slate-700'}`}>{item.label}</span>
                 <span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest mt-1 ${selectedPeriod?.label === item.label ? 'text-blue-400' : 'text-slate-400'}`}>{scheduleView}</span>
@@ -529,13 +533,17 @@ export default function ShiftRegistryDashboard({
   reservations,
   isGlobalAccess,
   clockedInEmployeeIds,
-  setClockedInEmployeeIds,
-  viewMode
+  viewMode,
+  pinEntrySuspended,
 }: ShiftRegistryDashboardProps) {
 
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
   const [showPinEntry, setShowPinEntry] = useState(false);
+
+  useEffect(() => {
+    if (pinEntrySuspended) setShowPinEntry(false);
+  }, [pinEntrySuspended]);
 
   const activeEmployees = useMemo(() => allEmployees.filter(e => clockedInEmployeeIds.includes(e.id)), [allEmployees, clockedInEmployeeIds]);
 
@@ -568,10 +576,6 @@ export default function ShiftRegistryDashboard({
         console.warn("Audio not supported or permitted");
       }
 
-      if (!clockedInEmployeeIds.includes(emp.id)) {
-        setClockedInEmployeeIds(prev => [...prev, emp.id]);
-      }
-      
       // Check if they need to start a shift
       const hasActive = emp.shifts.find(s => s.endTime === null);
       if (!hasActive) {
@@ -591,7 +595,8 @@ export default function ShiftRegistryDashboard({
     }
   };
 
-  const exportPeriodReport = ({ type, startDate, endDate }: { type: string, startDate: Date, endDate: Date }) => {
+  const exportPeriodReport = async ({ type, startDate, endDate }: { type: string, startDate: Date, endDate: Date }) => {
+    const { jsPDF } = await import('jspdf');
     const doc = new jsPDF();
     doc.setFont("Helvetica", "bold");
     doc.setFontSize(18);
@@ -639,8 +644,9 @@ export default function ShiftRegistryDashboard({
     doc.save(`Shift_${type}_Report_${startDate.toLocaleDateString().replace(/\//g, '-')}.pdf`);
   };
 
-  const exportPDF = () => {
+  const exportPDF = async () => {
     if (activeEmployees.length === 0) return;
+    const { jsPDF } = await import('jspdf');
     const targets = activeEmployees;
     const doc = new jsPDF();
     doc.setFont("Helvetica", "bold");
@@ -769,7 +775,6 @@ export default function ShiftRegistryDashboard({
                         employee={emp} 
                         allEmployees={allEmployees} 
                         setAllEmployees={setAllEmployees}
-                        setClockedInEmployeeIds={setClockedInEmployeeIds}
                     />
                 ))}
             </div>

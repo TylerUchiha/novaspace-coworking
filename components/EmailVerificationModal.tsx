@@ -33,6 +33,17 @@ const EmailVerificationModal: React.FC<EmailVerificationModalProps> = ({
   const [resendCooldown, setResendCooldown] = useState(0);
   const [initialSendDone, setInitialSendDone] = useState(false);
 
+  const applySendError = (err: unknown) => {
+    const message = mapEmailVerificationError(err);
+    const waitMatch = message.match(/Please wait (\d+) seconds before requesting another code\./);
+    if (waitMatch) {
+      setResendCooldown(Number(waitMatch[1]));
+      setInitialSendDone(true);
+      return;
+    }
+    setError(message);
+  };
+
   const sendCode = useCallback(async () => {
     setError(null);
     setIsSending(true);
@@ -48,7 +59,7 @@ const EmailVerificationModal: React.FC<EmailVerificationModalProps> = ({
       setResendCooldown(60);
       setInitialSendDone(true);
     } catch (err) {
-      setError(mapEmailVerificationError(err));
+      applySendError(err);
     } finally {
       setIsSending(false);
     }

@@ -28,7 +28,7 @@ export class MonitoringErrorBoundary extends React.Component<Props, State> {
           <div className="max-w-md text-center space-y-4">
             <h1 className="text-2xl font-black text-slate-900">Something went wrong</h1>
             <p className="text-slate-500 font-medium">
-              An unexpected error occurred. Please refresh the page or contact support@novaspace.ai.
+              An unexpected error occurred. Please refresh the page or contact support@novaspace.work.
             </p>
             <button
               type="button"

@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Reservation, Room, UserProfile, LocationData, Vendor } from '../types';
 import { UserAvatar } from './UserAvatar';
-import { VENDORS } from '../constants';
+import { resolveMenuItemPrice } from '../utils/menuCatalog';
 import { 
   Users, 
   Calendar, 
@@ -408,11 +408,14 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
                       return (
                         <tr key={firstRes.id} className="group hover:bg-slate-50/50 transition-colors cursor-pointer" onClick={() => { 
                           const user = allUsers.find(u => u.name === firstRes.userName) || {
+                            uid: `guest-${firstRes.userName}`,
                             name: firstRes.userName,
                             pfp: getCustomerPfp(firstRes.userName),
-                            email: `${firstRes.userName.toLowerCase().replace(' ', '.')}@novaspace.ai`,
+                            email: `${firstRes.userName.toLowerCase().replace(' ', '.')}@novaspace.work`,
                             phone: '+1 (555) 234-8902',
-                            role: 'Member'
+                            role: 'customer' as const,
+                            credits: 0,
+                            paymentMethods: [],
                           };
                           setSelectedCustomer(user); 
                           setShowHistory(false); 
@@ -448,8 +451,11 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
                                   
                                   const inStorePrice = resGroup.reduce((sum, res) => {
                                     const itemsSum = res.selectedMenuItems?.reduce((itemSum, item) => {
-                                      const menuItem = selectedVendor?.menu?.find(m => m.id === item.itemId) || VENDORS.flatMap(v => v.menu || []).find(m => m.id === item.itemId);
-                                      return itemSum + (menuItem?.price || 0) * item.quantity;
+                                      const menuItemPrice = resolveMenuItemPrice(item.itemId, {
+                                        vendor: selectedVendor,
+                                        locations,
+                                      });
+                                      return itemSum + menuItemPrice * item.quantity;
                                     }, 0) || 0;
                                     return sum + itemsSum;
                                   }, 0);
@@ -715,7 +721,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
                      <div>
                        <p className="text-sm font-black text-slate-900 leading-tight">{viewingAddonsFor.userName}</p>
                        <div className="mt-1">
-                         <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-widest ${viewingAddonsFor.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : viewingAddonsFor.status === 'pending' ? 'bg-amber-100 text-amber-700' : viewingAddonsFor.status === 'mixed' ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700'}`}>{viewingAddonsFor.status}</span>
+                         <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-widest ${viewingAddonsFor.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : viewingAddonsFor.status === 'pending' ? 'bg-amber-100 text-amber-700' : (viewingAddonsFor.status as string) === 'mixed' ? 'bg-indigo-100 text-indigo-700' : 'bg-rose-100 text-rose-700'}`}>{viewingAddonsFor.status}</span>
                        </div>
                      </div>
                    </div>

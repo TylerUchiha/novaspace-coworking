@@ -18,6 +18,8 @@
     "deploy:rules": "firebase deploy --project refined-legend-420223 --only firestore:ai-studio-novaspacecoworki-863fc540-4213-48e8-8f94-f914c1f6fe77,storage",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
     "deploy:auth": "firebase deploy --only auth",
+    "connect:domain": "node scripts/connect-custom-domain.mjs",
+    "check:domain": "node scripts/check-custom-domain.mjs",
     "configure:phone-auth": "node scripts/configure-phone-auth.cjs",
     "deploy:all": "npm run functions:build && firebase deploy --project refined-legend-420223"
   },
@@ -29,12 +31,16 @@
     "lucide-react": "^0.562.0",
     "motion": "^12.38.0",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "react-easy-crop": "^6.1.0",
+    "react-router-dom": "^7.18.1"
   },
   "devDependencies": {
     "@firebase/eslint-plugin-security-rules": "^0.0.2",
     "@tailwindcss/vite": "^4.3.2",
     "@types/node": "^22.14.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.0",
     "concurrently": "^9.2.3",
     "cross-env": "^7.0.3",

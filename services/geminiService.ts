@@ -1,6 +1,5 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { Room } from "../types";
 import { novaBotChatRemote } from "./cloudFunctions";
 
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -43,71 +42,62 @@ export const detectLanguageDialectResponse = (input: string): boolean => {
   return false;
 };
 
-export const getSmartRecommendation = async (userPrompt: string, rooms: Room[]): Promise<any> => {
-  if (detectLanguageDialectResponse(userPrompt)) {
-    return {
-      recommendedRoomId: rooms[0]?.id || '',
-      reasoning: userPrompt
-    };
-  }
-
-  const apiKey = getClientApiKey();
-  if (!apiKey) {
-    throw new Error('Gemini API key is not configured.');
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  
-  const roomContext = rooms.map(r => ({
-    id: r.id,
-    name: r.name,
-    capacity: r.capacity,
-    amenities: r.amenities.join(", "),
-    status: r.status,
-    type: r.type,
-    price: r.pricePerHour
-  }));
-
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: `Analyze this coworking space and recommend the best room for the user's request.
-    
-    User Request: "${userPrompt}"
-    
-    Available Rooms: ${JSON.stringify(roomContext)}
-    
-    Provide the ID of the room and a brief reasoning.
-    
-    CRITICAL LANGUAGE REQUIREMENT: You MUST detect the language of the user's request (e.g. French, Spanish, German, Arabic, etc.) and write the "reasoning" response in that exact same language.`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          recommendedRoomId: { 
-            type: Type.STRING,
-            description: "The unique ID of the recommended room"
-          },
-          reasoning: { 
-            type: Type.STRING,
-            description: "Brief explanation of why this room fits the request"
-          }
-        },
-        required: ["recommendedRoomId", "reasoning"]
-      }
-    }
-  });
-
-  return JSON.parse(response.text || '{}');
-};
-
 export type NovaBotResponse = {
   reply: string;
   matchingLocationIds: string[];
   matchingTags: string[];
   matchingCities: string[];
   filterAction: 'replace' | 'append';
+  shouldApplyFilters: boolean;
 };
+
+const CASUAL_CHAT_PATTERN = /^(hi|hello|hey|howdy|yo|sup|thanks|thank you|ok|okay|cool|nice|good morning|good afternoon|good evening)[\s!.?]*$/i;
+
+export function shouldApplyNovaBotFilters(response: NovaBotResponse, userPrompt?: string): boolean {
+  if (userPrompt && CASUAL_CHAT_PATTERN.test(userPrompt.trim())) {
+    return false;
+  }
+  return response.shouldApplyFilters === true;
+}
+
+export type NovaBotFilterUpdates = {
+  chatbotFilteredIds: string[] | null;
+  selectedTags: string[];
+  selectedCities: string[];
+};
+
+export function getNovaBotFilterUpdates(
+  response: NovaBotResponse,
+  selectedTags: string[],
+  selectedCities: string[],
+  userPrompt?: string,
+): NovaBotFilterUpdates | null {
+  if (!shouldApplyNovaBotFilters(response, userPrompt)) {
+    return null;
+  }
+
+  const nextTags = response.filterAction === 'replace' ? [] : [...selectedTags];
+  const nextCities = response.filterAction === 'replace' ? [] : [...selectedCities];
+
+  let newTags = selectedTags;
+  if (response.matchingTags?.length > 0) {
+    newTags = Array.from(new Set([...nextTags, ...response.matchingTags]));
+  } else if (response.filterAction === 'replace') {
+    newTags = [];
+  }
+
+  let newCities = selectedCities;
+  if (response.matchingCities?.length > 0) {
+    newCities = Array.from(new Set([...nextCities, ...response.matchingCities]));
+  } else if (response.filterAction === 'replace') {
+    newCities = [];
+  }
+
+  const chatbotFilteredIds =
+    response.matchingLocationIds?.length > 0 ? response.matchingLocationIds : null;
+
+  return { chatbotFilteredIds, selectedTags: newTags, selectedCities: newCities };
+}
 
 export function getNovaBotErrorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'message' in error) {
@@ -181,7 +171,13 @@ Instructions:
 3. Respond in a friendly, conversational tone.
 4. Return JSON matching the schema.
 5. LANGUAGE RULE: Respond in the SAME language as the user (including Egyptian Arabic for Franco-Arabic like "3aml eh").
-6. User name: "${userName || 'there'}", profession: "${userProfession || 'Member'}". Greet playfully as "hey ${userFirstName || 'there'}".`,
+6. User name: "${userName || 'there'}", profession: "${userProfession || 'Member'}". Greet playfully as "hey ${userFirstName || 'there'}".
+
+FILTER RULES (critical):
+- Set shouldApplyFilters to false for greetings, small talk, thanks, or general questions (e.g. "hello", "hi", "how are you"). Reply warmly but do NOT change any filters.
+- Set shouldApplyFilters to true ONLY when the user mentions workspace preferences: city, tags, amenities, "show me", "I want", "find", "looking for", etc.
+- When shouldApplyFilters is false, return empty arrays for matchingLocationIds, matchingTags, matchingCities.
+- When shouldApplyFilters is true and showing all / clearing filters, set matchingLocationIds to ALL workspace ids.`,
       responseMimeType: "application/json",
       responseSchema: {
         type: Type.OBJECT,
@@ -191,8 +187,9 @@ Instructions:
           matchingTags: { type: Type.ARRAY, items: { type: Type.STRING } },
           matchingCities: { type: Type.ARRAY, items: { type: Type.STRING } },
           filterAction: { type: Type.STRING, enum: ["replace", "append"] },
+          shouldApplyFilters: { type: Type.BOOLEAN },
         },
-        required: ["reply", "matchingLocationIds", "matchingTags", "matchingCities", "filterAction"]
+        required: ["reply", "matchingLocationIds", "matchingTags", "matchingCities", "filterAction", "shouldApplyFilters"]
       }
     }
   });
@@ -206,7 +203,8 @@ Instructions:
       matchingLocationIds: locations.map(l => l.id),
       matchingTags: [],
       matchingCities: [],
-      filterAction: "replace"
+      filterAction: "replace",
+      shouldApplyFilters: false,
     };
   }
 }
@@ -226,7 +224,8 @@ export const getNovaBotResponse = async (
       matchingLocationIds: locations.map(l => l.id),
       matchingTags: [],
       matchingCities: [],
-      filterAction: 'replace'
+      filterAction: 'replace',
+      shouldApplyFilters: false,
     };
   }
 

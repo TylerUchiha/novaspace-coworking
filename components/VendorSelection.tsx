@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Vendor, LocationData, UserProfile } from '../types';
 import { Building2, ArrowRight, MapPin, Search, XCircle, ChevronLeft, Plus, Inbox, Check, FilterX, Bot, Send, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { getNovaBotResponse, getNovaBotErrorMessage } from '../services/geminiService';
+import { getNovaBotResponse, getNovaBotErrorMessage, getNovaBotFilterUpdates } from '../services/geminiService';
 import { useRemoteConfig } from './RemoteConfigProvider';
 import { UserAvatar } from './UserAvatar';
 
@@ -131,23 +131,12 @@ const VendorSelection: React.FC<VendorSelectionProps> = ({
       );
       setIsBotTyping(false);
       setChatMessages(prev => [...prev, { role: 'model', text: response.reply }]);
-      if (response.matchingLocationIds && Array.isArray(response.matchingLocationIds)) {
-        setChatbotFilteredIds(response.matchingLocationIds);
-      }
-      
-      const nextTags = response.filterAction === 'replace' ? [] : [...selectedTags];
-      const nextCities = response.filterAction === 'replace' ? [] : [...selectedCities];
 
-      if (response.matchingTags && Array.isArray(response.matchingTags)) {
-        setSelectedTags(Array.from(new Set([...nextTags, ...response.matchingTags])));
-      } else if (response.filterAction === 'replace') {
-        setSelectedTags([]);
-      }
-
-      if (response.matchingCities && Array.isArray(response.matchingCities)) {
-        setSelectedCities(Array.from(new Set([...nextCities, ...response.matchingCities])));
-      } else if (response.filterAction === 'replace') {
-        setSelectedCities([]);
+      const filterUpdates = getNovaBotFilterUpdates(response, selectedTags, selectedCities, userText);
+      if (filterUpdates) {
+        setChatbotFilteredIds(filterUpdates.chatbotFilteredIds);
+        setSelectedTags(filterUpdates.selectedTags);
+        setSelectedCities(filterUpdates.selectedCities);
       }
     } catch (error) {
       console.error("Chatbot Error:", error);

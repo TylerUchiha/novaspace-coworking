@@ -1,13 +1,14 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Reservation, UserProfile } from '../types';
-import { User, Mail, Sparkles, Camera, Check, Lock, CreditCard, Plus, Trash2, LogOut, X, Edit2, Briefcase, ShieldCheck } from 'lucide-react';
+import { User, Mail, Sparkles, Camera, Check, Lock, CreditCard, Plus, Trash2, LogOut, X, Edit2, Briefcase, ShieldCheck, Bell } from 'lucide-react';
 import { UserAvatar } from './UserAvatar';
 import PhoneVerificationForm from './PhoneVerificationForm';
 import PhoneNumberInput from './PhoneNumberInput';
 import EmailVerificationModal from './EmailVerificationModal';
 import { useAuth } from './AuthProvider';
 import { normalizePhoneDigits } from '../services/phoneVerification';
+import { useImageCropUpload } from './ImageCropPortal';
 
 interface ProfilePageProps {
   user: UserProfile;
@@ -33,7 +34,7 @@ function VerificationStatusBadge({ verified }: { verified: boolean }) {
 }
 
 const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout, onUpdateProfile, onClose }) => {
-  const { user: firebaseUser } = useAuth();
+  const { user: firebaseUser, updatePassword } = useAuth();
   const [formData, setFormData] = useState<UserProfile>(user);
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -48,13 +49,24 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   });
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const [paymentMethods, setPaymentMethods] = useState(user.paymentMethods || []);
   const [isAddingPayment, setIsAddingPayment] = useState(false);
   const [newPayment, setNewPayment] = useState({ number: '', expiry: '', cvc: '', name: '' });
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
   const [editingPaymentName, setEditingPaymentName] = useState('');
+
+  const profileCrop = useImageCropUpload({
+    aspect: 1,
+    onCrop: async (file) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setFormData((prev) => ({ ...prev, pfp: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    },
+  });
 
   useEffect(() => {
     setFormData(user);
@@ -71,6 +83,12 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   const needsPhoneVerify = phoneChanged && !phoneVerifiedWithAuth;
   const phoneUnverified = !phoneVerifiedWithAuth;
   const emailVerified = formData.emailVerified === true;
+  const emailNotificationsEnabled = formData.emailNotificationsEnabled !== false;
+  const isGoogleSignIn =
+    firebaseUser?.providerData.some((p) => p.providerId === 'google.com') ?? false;
+  const hasPasswordProvider =
+    firebaseUser?.providerData.some((p) => p.providerId === 'password') ?? false;
+  const showPasswordSection = !isGoogleSignIn || hasPasswordProvider;
 
   const handleEmailVerified = async () => {
     await firebaseUser?.reload();
@@ -91,15 +109,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
     setTimeout(() => setShowSuccess(false), 3000);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setFormData(prev => ({ ...prev, pfp: reader.result as string }));
-      };
-      reader.readAsDataURL(file);
-    }
+  const handleToggleEmailNotifications = () => {
+    const nextEnabled = !emailNotificationsEnabled;
+    const updated = { ...formData, emailNotificationsEnabled: nextEnabled };
+    setFormData(updated);
+    onUpdateProfile(updated);
   };
 
   const handleSave = () => {
@@ -123,14 +137,24 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
     }, 800);
   };
 
-  const handleUpdatePassword = () => {
+  const handleUpdatePassword = async () => {
+    if (passwordData.newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters.');
+      return;
+    }
+
+    setPasswordError(null);
     setIsUpdatingPassword(true);
-    setTimeout(() => {
-      setIsUpdatingPassword(false);
+    try {
+      await updatePassword(passwordData.currentPassword, passwordData.newPassword);
       setPasswordSuccess(true);
       setPasswordData({ currentPassword: '', newPassword: '', confirmPassword: '' });
       setTimeout(() => setPasswordSuccess(false), 3000);
-    }, 800);
+    } catch (error) {
+      setPasswordError(error instanceof Error ? error.message : 'Could not update password.');
+    } finally {
+      setIsUpdatingPassword(false);
+    }
   };
 
   const handleDeletePaymentMethod = (id: string) => {
@@ -208,18 +232,12 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
                 size="2xl" 
               />
               <button 
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => profileCrop.openPicker()}
                 className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-full opacity-0 group-hover:opacity-100 transition-opacity z-30"
               >
                 <Camera className="text-white" size={24} />
               </button>
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                className="hidden" 
-                accept="image/*" 
-                onChange={handleFileChange} 
-              />
+              <input {...profileCrop.inputProps} />
             </div>
             <div className="pt-2">
               <h2 className="text-2xl font-black text-slate-900 tracking-tight">{formData.name}</h2>
@@ -389,6 +407,38 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
           </div>
         </div>
 
+        <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
+          <div className="flex items-center justify-between gap-6 mb-2">
+            <div>
+              <h3 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                <Bell className="text-blue-500" size={24} />
+                Email Notifications
+              </h3>
+              <p className="text-sm font-medium text-slate-500 mt-2">
+                Receive booking updates and reminders at {formData.email || 'your email'}.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={emailNotificationsEnabled}
+              onClick={handleToggleEmailNotifications}
+              className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full transition-colors ${
+                emailNotificationsEnabled ? 'bg-blue-600' : 'bg-slate-200'
+              }`}
+            >
+              <span
+                className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition-transform ${
+                  emailNotificationsEnabled ? 'translate-x-7' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+            {emailNotificationsEnabled ? 'Enabled' : 'Disabled'}
+          </p>
+        </div>
+
         {/* Payment Methods Section */}
         <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
           <div className="flex items-center justify-between mb-8">
@@ -555,71 +605,99 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
           </div>
         </div>
 
-        {/* Security Section */}
-        <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
-          <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8 flex items-center gap-3">
-            <Lock className="text-slate-400" size={24} />
-            Security
-          </h3>
+        {showPasswordSection && (
+          <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
+            <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8 flex items-center gap-3">
+              <Lock className="text-slate-400" size={24} />
+              Security
+            </h3>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-1.5 md:col-span-2">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Current Password</label>
-              <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-slate-500 transition-colors" size={18} />
-                <input 
-                  type="password" 
-                  value={passwordData.currentPassword}
-                  onChange={(e) => setPasswordData(prev => ({ ...prev, currentPassword: e.target.value }))}
-                  className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-slate-400 focus:ring-4 focus:ring-slate-500/10 transition-all font-bold text-slate-900 text-sm"
-                />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {passwordError && (
+                <div className="md:col-span-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-600">
+                  {passwordError}
+                </div>
+              )}
+              <div className="space-y-1.5 md:col-span-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Current Password</label>
+                <div className="relative group">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-slate-500 transition-colors" size={18} />
+                  <input 
+                    type="password" 
+                    autoComplete="current-password"
+                    value={passwordData.currentPassword}
+                    onChange={(e) => {
+                      setPasswordData(prev => ({ ...prev, currentPassword: e.target.value }));
+                      if (passwordError) setPasswordError(null);
+                    }}
+                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-slate-400 focus:ring-4 focus:ring-slate-500/10 transition-all font-bold text-slate-900 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">New Password</label>
+                <div className="relative group">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-slate-500 transition-colors" size={18} />
+                  <input 
+                    type="password" 
+                    autoComplete="new-password"
+                    minLength={6}
+                    value={passwordData.newPassword}
+                    onChange={(e) => {
+                      setPasswordData(prev => ({ ...prev, newPassword: e.target.value }));
+                      if (passwordError) setPasswordError(null);
+                    }}
+                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-slate-400 focus:ring-4 focus:ring-slate-500/10 transition-all font-bold text-slate-900 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Confirm New Password</label>
+                <div className="relative group">
+                  <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-slate-500 transition-colors" size={18} />
+                  <input 
+                    type="password" 
+                    autoComplete="new-password"
+                    minLength={6}
+                    value={passwordData.confirmPassword}
+                    onChange={(e) => {
+                      setPasswordData(prev => ({ ...prev, confirmPassword: e.target.value }));
+                      if (passwordError) setPasswordError(null);
+                    }}
+                    className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-slate-400 focus:ring-4 focus:ring-slate-500/10 transition-all font-bold text-slate-900 text-sm"
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">New Password</label>
-              <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-slate-500 transition-colors" size={18} />
-                <input 
-                  type="password" 
-                  value={passwordData.newPassword}
-                  onChange={(e) => setPasswordData(prev => ({ ...prev, newPassword: e.target.value }))}
-                  className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-slate-400 focus:ring-4 focus:ring-slate-500/10 transition-all font-bold text-slate-900 text-sm"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Confirm New Password</label>
-              <div className="relative group">
-                <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-slate-500 transition-colors" size={18} />
-                <input 
-                  type="password" 
-                  value={passwordData.confirmPassword}
-                  onChange={(e) => setPasswordData(prev => ({ ...prev, confirmPassword: e.target.value }))}
-                  className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:bg-white focus:border-slate-400 focus:ring-4 focus:ring-slate-500/10 transition-all font-bold text-slate-900 text-sm"
-                />
-              </div>
+            <div className="mt-8 flex justify-end items-center gap-4 pt-6 border-t border-slate-100">
+              {passwordSuccess && (
+                <div className="flex items-center gap-2 text-emerald-600 font-black text-xs uppercase tracking-widest animate-in fade-in slide-in-from-right-4">
+                  <Check size={16} /> Updated
+                </div>
+              )}
+              <button 
+                type="button"
+                onClick={handleUpdatePassword}
+                disabled={
+                  isUpdatingPassword ||
+                  !passwordData.currentPassword ||
+                  passwordData.newPassword.length < 6 ||
+                  passwordData.newPassword !== passwordData.confirmPassword
+                }
+                className="px-8 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-200 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center gap-2"
+              >
+                {isUpdatingPassword ? 'Updating...' : 'Update Password'}
+              </button>
             </div>
           </div>
-
-          <div className="mt-8 flex justify-end items-center gap-4 pt-6 border-t border-slate-100">
-            {passwordSuccess && (
-              <div className="flex items-center gap-2 text-emerald-600 font-black text-xs uppercase tracking-widest animate-in fade-in slide-in-from-right-4">
-                <Check size={16} /> Updated
-              </div>
-            )}
-            <button 
-              onClick={handleUpdatePassword}
-              disabled={isUpdatingPassword || !passwordData.currentPassword || !passwordData.newPassword || passwordData.newPassword !== passwordData.confirmPassword}
-              className="px-8 py-3 bg-slate-100 text-slate-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-200 active:scale-[0.98] transition-all disabled:opacity-50 flex items-center gap-2"
-            >
-              {isUpdatingPassword ? 'Updating...' : 'Update Password'}
-            </button>
-          </div>
-        </div>
+        )}
 
       </div>
+
+      {profileCrop.cropPortal}
 
       {showEmailVerifyModal && (
         <EmailVerificationModal

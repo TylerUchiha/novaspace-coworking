@@ -1,4 +1,5 @@
 import { db } from './db';
+import { MAIL_FROM, SUPPORT_EMAIL } from './contact';
 
 export type TransactionCategory =
   | 'top_up'
@@ -62,6 +63,8 @@ export async function queueEmail(to: string, subject: string, html: string, text
   if (!to) return;
   await db.collection('mail').add({
     to,
+    from: MAIL_FROM,
+    replyTo: SUPPORT_EMAIL,
     message: { subject, html, text },
   });
 }

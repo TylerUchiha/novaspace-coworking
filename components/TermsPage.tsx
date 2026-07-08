@@ -1,6 +1,7 @@
 
 import React, { useEffect } from 'react';
 import { ChevronLeft, FileText, Scale, Gavel, CheckCircle2 } from 'lucide-react';
+import { SUPPORT_EMAIL } from '../constants/contact';
 
 interface TermsPageProps {
   onBack: () => void;
@@ -33,7 +34,7 @@ const TermsPage: React.FC<TermsPageProps> = ({ onBack }) => {
             Terms of <span className="text-indigo-600 italic">Service</span>
           </h2>
           <p className="text-lg text-slate-500 font-medium mt-4">
-            Please read these terms carefully before using NovaSpace.
+            Effective date: July 2025. By using NovaSpace you agree to these terms.
           </p>
         </header>
 
@@ -46,7 +47,7 @@ const TermsPage: React.FC<TermsPageProps> = ({ onBack }) => {
               <h3 className="text-2xl font-black text-slate-900 tracking-tight">Agreement to Terms</h3>
             </div>
             <p className="text-slate-600 font-medium leading-relaxed">
-              By accessing or using our services, you agree to be bound by these Terms of Service and all applicable laws and regulations. If you do not agree with any of these terms, you are prohibited from using or accessing this site.
+              By accessing or using NovaSpace at novaspace.work, you agree to these Terms of Service and our Privacy Policy. If you do not agree, you may not use the service. These terms are governed by the laws of Egypt.
             </p>
           </section>
 
@@ -58,7 +59,7 @@ const TermsPage: React.FC<TermsPageProps> = ({ onBack }) => {
               <h3 className="text-2xl font-black text-slate-900 tracking-tight">User Responsibilities</h3>
             </div>
             <p className="text-slate-600 font-medium leading-relaxed">
-              You are responsible for maintaining the confidentiality of your account and password and for restricting access to your computer. You agree to accept responsibility for all activities that occur under your account or password.
+              You are responsible for keeping your account credentials secure and for all activity under your account. You agree to provide accurate information, comply with workspace rules at each location, and not misuse the platform for fraud, harassment, or unauthorized access.
             </p>
           </section>
 
@@ -67,10 +68,29 @@ const TermsPage: React.FC<TermsPageProps> = ({ onBack }) => {
               <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
                 <CheckCircle2 size={24} />
               </div>
-              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Booking Policy</h3>
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Bookings &amp; Cancellations</h3>
             </div>
+            <p className="text-slate-600 font-medium leading-relaxed mb-4">
+              Bookings are subject to availability and the policies of each workspace provider. Unless a location specifies otherwise, the default cancellation policy applies:
+            </p>
+            <ul className="list-disc pl-6 space-y-2 text-slate-600 font-medium leading-relaxed">
+              <li>Cancellations made more than 24 hours before the booking start time receive a full refund in NovaSpace credits.</li>
+              <li>Cancellations within 24 hours are non-refundable and cannot be cancelled online.</li>
+              <li>No-shows forfeit the full booking amount.</li>
+            </ul>
+            <p className="text-slate-600 font-medium leading-relaxed mt-4">
+              NovaSpace credits have no cash value unless a separate paid top-up feature is explicitly offered and completed through an approved payment provider.
+            </p>
+          </section>
+
+          <section className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-xl">
+            <h3 className="text-2xl font-black text-slate-900 tracking-tight mb-4">Contact</h3>
             <p className="text-slate-600 font-medium leading-relaxed">
-              Bookings are subject to availability and the specific terms of the workspace provider. Cancellations must be made within the specified timeframe to be eligible for a refund.
+              Questions about these terms? Email{' '}
+              <a href={`mailto:${SUPPORT_EMAIL}`} className="text-indigo-600 font-bold hover:underline">
+                {SUPPORT_EMAIL}
+              </a>
+              .
             </p>
           </section>
         </div>

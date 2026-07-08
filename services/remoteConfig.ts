@@ -17,7 +17,7 @@ export interface AppRemoteConfigValues {
 export const REMOTE_CONFIG_DEFAULTS: AppRemoteConfigValues = {
   featureNovaBotEnabled: true,
   featurePhoneAuthEnabled: true,
-  featureCreditsTopUpEnabled: true,
+  featureCreditsTopUpEnabled: false,
   minTopUpAmount: 200,
   defaultCancellationPolicyText:
     'Cancellations made more than 24 hours before the booking start time receive a full refund in NovaSpace credits. Cancellations within 24 hours are non-refundable. No-shows forfeit the full booking amount.',

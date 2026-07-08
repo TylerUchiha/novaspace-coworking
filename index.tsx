@@ -1,10 +1,12 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import './index.css';
 import App from './App';
 import { AuthProvider } from './components/AuthProvider';
 import { RemoteConfigProvider } from './components/RemoteConfigProvider';
 import { MonitoringErrorBoundary } from './components/MonitoringErrorBoundary';
+import { CookieConsentBanner } from './components/CookieConsentBanner';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -17,7 +19,10 @@ root.render(
     <MonitoringErrorBoundary>
       <RemoteConfigProvider>
         <AuthProvider>
-          <App />
+          <BrowserRouter>
+            <App />
+            <CookieConsentBanner />
+          </BrowserRouter>
         </AuthProvider>
       </RemoteConfigProvider>
     </MonitoringErrorBoundary>

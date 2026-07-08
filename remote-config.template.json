@@ -11,7 +11,7 @@
       "valueType": "BOOLEAN"
     },
     "feature_credits_topup_enabled": {
-      "defaultValue": { "value": "true" },
+      "defaultValue": { "value": "false" },
       "description": "Show credits top-up UI for customers",
       "valueType": "BOOLEAN"
     },
@@ -29,7 +29,7 @@
     },
     "owner_passcode": {
       "defaultValue": { "value": "" },
-      "description": "Owner master passcode (overrides Secret Manager when non-empty). Leave empty to use OWNER_PASSCODE secret.",
+      "description": "Owner master passcode (overrides Secret Manager when non-empty). Leave empty to use OWNER_PASSCODE secret or the built-in default.",
       "valueType": "STRING"
     }
   }

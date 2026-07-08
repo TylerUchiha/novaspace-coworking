@@ -1,5 +1,6 @@
 import { getPerformance, trace as createTrace, PerformanceTrace } from 'firebase/performance';
 import { app } from './firebase';
+import { hasAnalyticsConsent } from '../utils/analyticsConsent';
 
 let performanceEnabled = false;
 let crashlyticsReady = false;
@@ -18,7 +19,7 @@ let crashlyticsApi: CrashlyticsModule | null = null;
 const enableMonitoring = import.meta.env.PROD || import.meta.env.VITE_ENABLE_MONITORING === 'true';
 
 export async function initFirebaseMonitoring(): Promise<void> {
-  if (typeof window === 'undefined' || !enableMonitoring) {
+  if (typeof window === 'undefined' || !enableMonitoring || !hasAnalyticsConsent()) {
     return;
   }
 

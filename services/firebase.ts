@@ -4,9 +4,26 @@ import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import { initializeAppCheck, ReCaptchaV3Provider } from 'firebase/app-check';
 import firebaseConfig from '../firebase-applet-config.json';
+import { hasAnalyticsConsent } from '../utils/analyticsConsent';
 import { initFirebaseMonitoring } from './firebaseMonitoring';
 
-const app = initializeApp(firebaseConfig);
+const FIREBASE_AUTH_DOMAIN = 'refined-legend-420223.firebaseapp.com';
+const CUSTOM_AUTH_DOMAIN = 'novaspace.work';
+
+function resolveAuthDomain(): string {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === CUSTOM_AUTH_DOMAIN || host === `www.${CUSTOM_AUTH_DOMAIN}`) {
+      return CUSTOM_AUTH_DOMAIN;
+    }
+  }
+  return FIREBASE_AUTH_DOMAIN;
+}
+
+const app = initializeApp({
+  ...firebaseConfig,
+  authDomain: resolveAuthDomain(),
+});
 export { app };
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
@@ -19,7 +36,9 @@ if (useEmulators && typeof window !== 'undefined') {
   connectFirestoreEmulator(db, '127.0.0.1', 8080);
 }
 
-void initFirebaseMonitoring();
+if (hasAnalyticsConsent()) {
+  void initFirebaseMonitoring();
+}
 
 const appCheckSiteKey = import.meta.env.VITE_APPCHECK_SITE_KEY as string | undefined;
 if (typeof window !== 'undefined' && appCheckSiteKey) {

@@ -1,10 +1,16 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { db } from './db';
 import { writeCreditTransaction, recordAnalyticsEvent } from './transactionHelpers';
+import { getRemoteConfigBool } from './remoteConfigServer';
 
 const MIN_TOP_UP = 200;
 
 export const topUpCredits = onCall({ cors: true }, async (request) => {
+  const topUpEnabled = await getRemoteConfigBool('feature_credits_topup_enabled', false);
+  if (!topUpEnabled) {
+    throw new HttpsError('failed-precondition', 'Credit top-up is not available at this time.');
+  }
+
   if (!request.auth?.uid) {
     throw new HttpsError('unauthenticated', 'Sign in to top up.');
   }

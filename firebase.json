@@ -32,6 +32,44 @@
       "**/.*",
       "**/node_modules/**"
     ],
+    "headers": [
+      {
+        "source": "/assets/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
+        "source": "/firebase-messaging-sw.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "/index.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      },
+      {
+        "source": "/",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      }
+    ],
     "rewrites": [
       {
         "source": "**",
@@ -44,15 +82,22 @@
       "localhost",
       "127.0.0.1",
       "refined-legend-420223.firebaseapp.com",
-      "refined-legend-420223.web.app"
+      "refined-legend-420223.web.app",
+      "novaspace.work",
+      "www.novaspace.work"
     ],
     "providers": {
       "emailPassword": true,
       "googleSignIn": {
-        "oAuthBrandDisplayName": "NovaSpace Coworking",
-        "supportEmail": "support@novaspace.ai"
+        "oAuthBrandDisplayName": "Nova Space",
+        "supportEmail": "support@novaspace.work",
+        "privacyPolicyUrl": "https://novaspace.work/privacy",
+        "termsOfServiceUrl": "https://novaspace.work/terms"
       }
     }
+  },
+  "remoteconfig": {
+    "template": "remote-config.template.json"
   },
   "extensions": {
     "firestore-send-email": "firebase/firestore-send-email@0.2.9"

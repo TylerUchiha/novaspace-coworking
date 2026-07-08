@@ -54,7 +54,8 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.vendorId is string && data.vendorId.size() <= 128
         && data.name is string && data.name.size() <= 128
-        && data.floors is list;
+        && data.floors is list
+        && !('staffAccessCode' in data);
     }
 
     function isValidUserProfile(data) {
@@ -80,9 +81,49 @@ service cloud.firestore {
         && data.createdAt is number;
     }
 
+    function isSafeUserProfileCreate() {
+      return incoming().credits == 1000
+        && (!('role' in incoming()) || incoming().role == 'customer');
+    }
+
+    function isSafeUserProfileUpdate() {
+      return (!('role' in incoming()) || incoming().role == existing().role)
+        && (!('credits' in incoming()) || incoming().credits == existing().credits)
+        && (!('emailVerified' in incoming()) || incoming().emailVerified == existing().emailVerified);
+    }
+
+    function isSafeReservationUpdate() {
+      return incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().roomId == existing().roomId
+        && incoming().locationId == existing().locationId
+        && incoming().floorId == existing().floorId
+        && incoming().vendorId == existing().vendorId
+        && incoming().date == existing().date
+        && incoming().time == existing().time
+        && incoming().duration == existing().duration
+        && incoming().createdAt == existing().createdAt;
+    }
+
+    function isPublicAvailabilityDoc() {
+      return existing().keys().hasAll(['id', 'roomId', 'locationId', 'floorId', 'vendorId', 'date', 'time', 'duration', 'status', 'createdAt'])
+        && existing().status in ['approved', 'pending']
+        && !('userId' in existing())
+        && !('userName' in existing())
+        && !('userEmail' in existing());
+    }
+
     match /meta/catalog {
       allow read: if true;
       allow write: if false;
+    }
+
+    match /staffAccessCodes/{codeId} {
+      allow read, write: if false;
+    }
+
+    match /staffAccessCodeByLocation/{locationId} {
+      allow read, write: if false;
     }
 
     match /vendors/{vendorId} {
@@ -114,11 +155,12 @@ service cloud.firestore {
         && request.auth.uid == userId
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.keys().hasAll(['uid', 'name', 'email', 'credits'])
+        && isSafeUserProfileCreate()
         && (!('emailVerified' in incoming()) || incoming().emailVerified == false);
       allow update: if isSignedIn()
         && request.auth.uid == userId
         && request.resource.data.uid == resource.data.uid
-        && (!('emailVerified' in incoming()) || incoming().emailVerified == existing().emailVerified);
+        && isSafeUserProfileUpdate();
       allow delete: if false;
     }
 
@@ -131,10 +173,16 @@ service cloud.firestore {
     match /reservations/{reservationId} {
       allow get: if isSignedIn() && isValidId(reservationId)
         && (existing().userId == request.auth.uid || isStaff());
-      allow list: if isSignedIn();
+      allow list: if isStaff()
+        || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow create: if false;
-      allow update: if isStaff() && isValidId(reservationId);
+      allow update: if isStaff() && isValidId(reservationId) && isSafeReservationUpdate();
       allow delete: if isStaff() && isValidId(reservationId);
+    }
+
+    match /publicAvailability/{slotId} {
+      allow get, list: if isSignedIn() && isPublicAvailabilityDoc();
+      allow create, update, delete: if false;
     }
 
     match /users/{userId}/transactions/{txId} {
@@ -167,6 +215,10 @@ service cloud.firestore {
     }
 
     match /emailVerifications/{uid} {
+      allow read, write: if false;
+    }
+
+    match /phonePasswordResets/{sessionId} {
       allow read, write: if false;
     }
   }

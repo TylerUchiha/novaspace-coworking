@@ -9,7 +9,8 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { LocationData, Vendor } from '../types';
-import { seedCatalogRemote } from './cloudFunctions';
+import { seedCatalogRemote, saveCatalogLocationRemote, saveCatalogVendorRemote } from './cloudFunctions';
+import { ensureStaffFirebaseAuth } from './staffAuth';
 
 export async function isCatalogEmpty(): Promise<boolean> {
   const snap = await getDocs(query(collection(db, 'vendors'), limit(1)));
@@ -36,11 +37,18 @@ export function subscribeVendors(callback: (vendors: Vendor[]) => void): () => v
   );
 }
 
+function stripStaffAccessCode<T extends Record<string, unknown>>(data: T): LocationData {
+  const { staffAccessCode: _removed, ...rest } = data;
+  return rest as unknown as LocationData;
+}
+
 export function subscribeLocations(callback: (locations: LocationData[]) => void): () => void {
   return onSnapshot(
     collection(db, 'locations'),
     (snap) => {
-      const locations = snap.docs.map((d) => ({ ...d.data(), id: d.id } as LocationData));
+      const locations = snap.docs.map((d) =>
+        stripStaffAccessCode({ ...d.data(), id: d.id } as Record<string, unknown>),
+      );
       callback(locations);
     },
     (err) => console.error('subscribeLocations error', err),
@@ -48,9 +56,28 @@ export function subscribeLocations(callback: (locations: LocationData[]) => void
 }
 
 export async function saveVendor(vendor: Vendor): Promise<void> {
-  await setDoc(doc(db, 'vendors', vendor.id), vendor, { merge: true });
+  const ready = await ensureStaffFirebaseAuth();
+  if (!ready) {
+    throw new Error('Staff Firebase authentication required to save vendor.');
+  }
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true') {
+    await setDoc(doc(db, 'vendors', vendor.id), vendor, { merge: true });
+    return;
+  }
+  await saveCatalogVendorRemote(vendor as unknown as Record<string, unknown>);
 }
 
 export async function saveLocation(location: LocationData): Promise<void> {
-  await setDoc(doc(db, 'locations', location.id), location, { merge: true });
+  const ready = await ensureStaffFirebaseAuth();
+  if (!ready) {
+    throw new Error('Staff Firebase authentication required to save location.');
+  }
+  if (import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true') {
+    const { staffAccessCode: _removed, ...publicLocation } = location as LocationData & {
+      staffAccessCode?: string;
+    };
+    await setDoc(doc(db, 'locations', location.id), publicLocation, { merge: true });
+    return;
+  }
+  await saveCatalogLocationRemote(location as unknown as Record<string, unknown>);
 }

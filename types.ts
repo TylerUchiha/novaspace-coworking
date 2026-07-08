@@ -91,6 +91,9 @@ export interface UserProfile {
   paymentMethods?: PaymentMethod[];
   profession?: string;
   createdAt?: number;
+  favoritedRoomIds?: string[];
+  /** When false, booking/update emails are not sent. Defaults to true. */
+  emailNotificationsEnabled?: boolean;
 }
 
 export interface Category {
@@ -123,6 +126,19 @@ export interface Vendor {
   tags?: string[];
 }
 
+export interface PublicAvailability {
+  id: string;
+  roomId: string;
+  locationId: string;
+  floorId: string;
+  vendorId: string;
+  date: string;
+  time: string;
+  duration: number;
+  status: 'pending' | 'approved';
+  createdAt: number;
+}
+
 export interface Reservation {
   id: string;
   userId?: string;
@@ -142,6 +158,8 @@ export interface Reservation {
   totalOrderComment?: string;
   totalPrice?: number;
   paymentMethod?: string;
+  cancelledAt?: number;
+  cancelledBy?: 'user' | 'staff';
 }
 
 export interface EmployeeShift {

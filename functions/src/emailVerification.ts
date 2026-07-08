@@ -3,11 +3,11 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { db } from './db';
+import { MAIL_FROM, SUPPORT_EMAIL } from './contact';
 
 const CODE_TTL_MS = 15 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const RESEND_COOLDOWN_MS = 60 * 1000;
-const MAIL_FROM = 'NovaSpace <novaspace.org@gmail.com>';
 
 function generateVerificationCode(): string {
   return randomInt(100000, 1000000).toString();
@@ -25,6 +25,7 @@ async function queueVerificationEmail(email: string, code: string): Promise<void
   await db.collection('mail').add({
     to: email,
     from: MAIL_FROM,
+    replyTo: SUPPORT_EMAIL,
     message: {
       subject: 'Your NovaSpace verification code',
       html: `

@@ -1,11 +1,12 @@
 {
   "indexes": [
     {
-      "collectionGroup": "reservations",
+      "collectionGroup": "publicAvailability",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "locationId", "order": "ASCENDING" },
-        { "fieldPath": "date", "order": "ASCENDING" }
+        { "fieldPath": "date", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
       ]
     },
     {

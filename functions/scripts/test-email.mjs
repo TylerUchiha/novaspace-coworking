@@ -3,7 +3,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 
 const DATABASE_ID =
   'ai-studio-novaspacecoworki-863fc540-4213-48e8-8f94-f914c1f6fe77';
-const TEST_TO = process.env.TEST_EMAIL_TO || 'novaspace.org@gmail.com';
+const TEST_TO = process.env.TEST_EMAIL_TO || 'support@novaspace.work';
 
 if (!getApps().length) {
   initializeApp({ projectId: 'refined-legend-420223' });
@@ -13,6 +13,7 @@ const db = getFirestore(DATABASE_ID);
 
 const docRef = await db.collection('mail').add({
   to: TEST_TO,
+  from: 'NovaSpace <support@novaspace.work>',
   message: {
     subject: 'NovaSpace test email',
     html: '<p>If you got this, the Trigger Email from Firestore extension works.</p>',

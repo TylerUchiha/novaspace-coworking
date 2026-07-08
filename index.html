@@ -3,13 +3,50 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NovaSpace Coworking</title>
+    <title>Nova Space</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <p
+        id="boot-status"
+        style="
+          margin: 0;
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: Inter, system-ui, sans-serif;
+          color: #64748b;
+          background: #f8fafc;
+        "
+      >
+        Loading Nova Space…
+      </p>
+    </div>
+    <noscript>
+      <p style="font-family: Inter, system-ui, sans-serif; text-align: center; padding: 48px;">
+        JavaScript is required to run Nova Space.
+      </p>
+    </noscript>
+    <script>
+      (function () {
+        var reloadKey = 'nova_asset_reload_v1';
+        window.addEventListener(
+          'error',
+          function (event) {
+            var target = event.target;
+            if (!target || target.tagName !== 'SCRIPT') return;
+            if (sessionStorage.getItem(reloadKey)) return;
+            sessionStorage.setItem(reloadKey, '1');
+            window.location.reload();
+          },
+          true
+        );
+      })();
+    </script>
     <script type="module" src="/index.tsx"></script>
   </body>
 </html>

@@ -1,13 +1,22 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { Room, RoomStatus, UserProfile, Vendor, MenuItem } from '../types';
-import { Users, Wifi, Tv, Coffee, Wind, X, CreditCard, Clock, Sparkles, Zap, Search, UserPlus, Mail, User, Phone, ShieldCheck, Coins, Plus, Minus, Utensils, Check, ChevronLeft, ChevronRight, Maximize2, AlertCircle, Banknote } from 'lucide-react';
+import { Users, Wifi, Tv, Coffee, Wind, X, CreditCard, Clock, Sparkles, Zap, Search, UserPlus, Mail, User, Phone, ShieldCheck, Coins, Plus, Minus, Utensils, Check, ChevronLeft, ChevronRight, Maximize2, AlertCircle, Banknote, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserAvatar } from './UserAvatar';
+import { createWalkInMemberRemote } from '../services/cloudFunctions';
 
 interface RoomDetailProps {
   rooms: Room[];
-  onBook: (rooms: Room[], duration: number, paymentMethod: string, targetUser?: UserProfile, selectedMenuItems?: { itemId: string; quantity: number; comment?: string }[], totalPriceOverride?: number, totalOrderComment?: string) => void;
+  onBook: (
+    rooms: Room[],
+    duration: number,
+    paymentMethod: string,
+    targetUser?: UserProfile,
+    selectedMenuItems?: { itemId: string; quantity: number; comment?: string }[],
+    totalPriceOverride?: number,
+    totalOrderComment?: string,
+  ) => Promise<boolean> | boolean;
   selectedDate: string;
   selectedTime: string;
   selectedTime24: string;
@@ -47,6 +56,10 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
   
   // Create New User Form
   const [newUser, setNewUser] = useState({ name: '', email: '', phone: '' });
+  const [memberCreating, setMemberCreating] = useState(false);
+  const [memberCreateError, setMemberCreateError] = useState<string | null>(null);
+  const [isBooking, setIsBooking] = useState(false);
+  const [bookingError, setBookingError] = useState<string | null>(null);
 
   // Gallery State
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -91,8 +104,15 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
     return `${displayH}:${endM.toString().padStart(2, '0')} ${period}`;
   }, [selectedTime24, bookingDuration]);
 
+  const switchStaffMode = (mode: 'select' | 'create' | 'guest') => {
+    setStaffMode(mode);
+    setSearchQuery('');
+    setSelectedStaffUser(null);
+    if (mode === 'create') setNewUser({ name: '', email: '', phone: '' });
+  };
+
   const filteredUsers = useMemo(() => {
-    if (!searchQuery) return allUsers.slice(0, 5);
+    if (!searchQuery.trim()) return [];
     const query = searchQuery.toLowerCase().trim();
     return allUsers.filter(u => 
       u.name.toLowerCase().includes(query) || 
@@ -121,7 +141,9 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
   const totalPrice = roomPrice + menuPrice;
   const totalCapacity = rooms.reduce((sum, r) => sum + r.capacity, 0);
 
-  const handleConfirm = () => { 
+  const handleConfirm = async () => { 
+    if (isBooking) return;
+
     const menuItems = Object.entries(basket)
       .filter(([id, qty]) => (qty as number) > 0)
       .map(([itemId, quantity]) => ({ 
@@ -131,7 +153,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
         deliveryTime: basketDeliveryTimes[itemId]
       }));
 
-    let finalPaymentMethod = paymentMethod;
+    let finalPaymentMethod: string = paymentMethod;
     if (paymentMethod === 'card') {
       if (selectedCardId === 'new') {
         const type = newCardData.number.startsWith('4') ? 'Visa' : 'Mastercard';
@@ -160,18 +182,62 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
       }
     }
 
-    if (isStaff) {
-      if (staffMode === 'create' && newUser.name && newUser.email && newUser.phone) {
-        onBook(rooms, bookingDuration, finalPaymentMethod, { ...newUser, role: 'Member', pfp: `https://picsum.photos/400/400?seed=${newUser.name}`, credits: 0, paymentMethods: [], profession: 'New Member' }, menuItems, totalPrice, totalOrderComment);
-      } else if (staffMode === 'select' && selectedStaffUser) {
-        onBook(rooms, bookingDuration, finalPaymentMethod, selectedStaffUser, menuItems, totalPrice, totalOrderComment);
-      } else if (staffMode === 'guest') {
-        onBook(rooms, bookingDuration, finalPaymentMethod, { name: 'Guest User', email: `guest_${Date.now()}@novaspace.ai`, phone: '', role: 'Member', pfp: '', credits: 0, paymentMethods: [], profession: 'Guest' }, menuItems, totalPrice, totalOrderComment);
+    setIsBooking(true);
+    setBookingError(null);
+
+    try {
+      if (isStaff) {
+        if (staffMode === 'create' && newUser.name && newUser.email && newUser.phone) {
+          setMemberCreating(true);
+          setMemberCreateError(null);
+          try {
+            const result = await createWalkInMemberRemote(newUser);
+            const createdProfile = result.profile as unknown as UserProfile;
+            const ok = await onBook(rooms, bookingDuration, finalPaymentMethod, { ...createdProfile, uid: result.uid, role: 'customer' }, menuItems, totalPrice, totalOrderComment);
+            if (!ok) {
+              setBookingError('Could not complete booking. Try again.');
+              return;
+            }
+          } catch (error) {
+            setMemberCreateError(error instanceof Error ? error.message : 'Could not create member account.');
+            return;
+          } finally {
+            setMemberCreating(false);
+          }
+        } else if (staffMode === 'select' && selectedStaffUser) {
+          const ok = await onBook(rooms, bookingDuration, finalPaymentMethod, selectedStaffUser, menuItems, totalPrice, totalOrderComment);
+          if (!ok) {
+            setBookingError('Could not complete booking. Try again.');
+            return;
+          }
+        } else if (staffMode === 'guest') {
+          const guestId = `guest-${Date.now()}`;
+          const ok = await onBook(
+            rooms,
+            bookingDuration,
+            finalPaymentMethod,
+            { uid: guestId, name: 'Guest User', email: `guest_${Date.now()}@novaspace.work`, phone: '', role: 'Member', pfp: '', credits: 0, paymentMethods: [], profession: 'Guest' },
+            menuItems,
+            totalPrice,
+            totalOrderComment,
+          );
+          if (!ok) {
+            setBookingError('Could not complete booking. Try again.');
+            return;
+          }
+        }
+      } else {
+        const ok = await onBook(rooms, bookingDuration, finalPaymentMethod, undefined, menuItems, totalPrice, totalOrderComment);
+        if (!ok) {
+          setBookingError('Could not complete booking. Try again.');
+          return;
+        }
       }
-    } else {
-      onBook(rooms, bookingDuration, finalPaymentMethod, undefined, menuItems, totalPrice, totalOrderComment);
+
+      setIsConfirmOpen(false);
+    } finally {
+      setIsBooking(false);
     }
-    setIsConfirmOpen(false);
   };
 
   return (
@@ -400,22 +466,15 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                   <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Assign Member</h3>
                   <div className="flex gap-2">
-                     <button onClick={() => setStaffMode('select')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${staffMode === 'select' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>EXISTING</button>
-                     <button onClick={() => setStaffMode('create')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${staffMode === 'create' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>NEW ACCOUNT</button>
-                     <button onClick={() => setStaffMode('guest')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${staffMode === 'guest' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>GUEST</button>
+                     <button onClick={() => switchStaffMode('select')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${staffMode === 'select' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>EXISTING</button>
+                     <button onClick={() => switchStaffMode('create')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${staffMode === 'create' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>NEW ACCOUNT</button>
+                     <button onClick={() => switchStaffMode('guest')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${staffMode === 'guest' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>GUEST</button>
                   </div>
                </div>
 
+               <div key={staffMode}>
                {staffMode === 'guest' ? (
-                  <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl flex items-center gap-3">
-                     <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center text-slate-500 font-black shrink-0">
-                        G
-                     </div>
-                     <div>
-                        <h4 className="text-sm font-black text-slate-800">Guest Checkout</h4>
-                        <p className="text-[10px] font-bold text-slate-400">No account will be created</p>
-                     </div>
-                  </div>
+                  <div className="min-h-[80px]" aria-label="Guest order — no account required" />
                ) : staffMode === 'select' ? (
                   <div className="space-y-4">
                      <div className="relative">
@@ -428,6 +487,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
                            className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-xs font-bold outline-none focus:bg-white focus:border-indigo-400 transition-all"
                         />
                      </div>
+                     {searchQuery.trim() && (
                      <div className="space-y-2">
                         {filteredUsers.map(user => (
                            <button key={user.email} onClick={() => setSelectedStaffUser(user)} className={`w-full p-3 rounded-xl border flex items-center gap-3 transition-all ${selectedStaffUser?.email === user.email ? 'bg-indigo-50 border-indigo-200 ring-2 ring-indigo-50' : 'bg-white border-slate-100 hover:border-indigo-100'}`}>
@@ -440,6 +500,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
                            </button>
                         ))}
                      </div>
+                     )}
                   </div>
                ) : (
                   <div className="space-y-4">
@@ -482,8 +543,12 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
                            />
                         </div>
                      </div>
+                     {memberCreateError && (
+                       <p className="text-xs font-bold text-rose-600">{memberCreateError}</p>
+                     )}
                   </div>
                )}
+               </div>
             </div>
          )}
       </div>
@@ -521,7 +586,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
 
       {isConfirmOpen && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
-          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={() => setIsConfirmOpen(false)} />
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={() => !isBooking && setIsConfirmOpen(false)} />
           <div className="relative bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-10 text-center animate-in zoom-in-95">
              <div className={`w-20 h-20 mx-auto rounded-3xl flex items-center justify-center mb-6 text-white ${isStaff ? 'bg-indigo-600' : 'bg-blue-600'}`}>
                 {isStaff ? <UserPlus size={40} /> : <CreditCard size={40} />}
@@ -611,9 +676,36 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
                     </p>
                   </div>
                 )}
+                {bookingError && (
+                  <div className="mb-2 p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-3">
+                    <AlertCircle size={18} className="text-rose-600 mt-0.5 shrink-0" />
+                    <p className="text-[11px] font-bold text-rose-700 leading-snug text-left">{bookingError}</p>
+                  </div>
+                )}
                 <div className="flex gap-4">
-                  <button onClick={() => setIsConfirmOpen(false)} className="flex-1 py-4 bg-slate-50 text-slate-400 font-black rounded-2xl uppercase tracking-widest text-xs">Back</button>
-                  <button disabled={hasUnassignedItems} onClick={handleConfirm} className={`flex-[2] py-4 text-white font-black rounded-2xl uppercase tracking-widest text-xs shadow-xl disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed ${isStaff ? 'bg-indigo-600' : 'bg-blue-600'}`}>Confirm Booking</button>
+                  <button
+                    onClick={() => setIsConfirmOpen(false)}
+                    disabled={isBooking}
+                    className="flex-1 py-4 bg-slate-50 text-slate-400 font-black rounded-2xl uppercase tracking-widest text-xs disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    disabled={hasUnassignedItems || memberCreating || isBooking}
+                    onClick={handleConfirm}
+                    className={`flex-[2] py-4 text-white font-black rounded-2xl uppercase tracking-widest text-xs shadow-xl disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed flex items-center justify-center gap-2 ${isStaff ? 'bg-indigo-600' : 'bg-blue-600'}`}
+                  >
+                    {isBooking ? (
+                      <>
+                        <Loader2 size={16} className="animate-spin" />
+                        Finalizing...
+                      </>
+                    ) : memberCreating ? (
+                      'Creating Member...'
+                    ) : (
+                      'Confirm Booking'
+                    )}
+                  </button>
                 </div>
              </div>
           </div>

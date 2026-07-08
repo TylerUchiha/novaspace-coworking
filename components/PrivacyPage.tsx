@@ -1,6 +1,7 @@
 
 import React, { useEffect } from 'react';
-import { ChevronLeft, Shield, Lock, Eye, ShieldCheck } from 'lucide-react';
+import { ChevronLeft, Shield, Lock, Eye, ShieldCheck, Cookie, Mail } from 'lucide-react';
+import { SUPPORT_EMAIL } from '../constants/contact';
 
 interface PrivacyPageProps {
   onBack: () => void;
@@ -33,7 +34,7 @@ const PrivacyPage: React.FC<PrivacyPageProps> = ({ onBack }) => {
             Privacy <span className="text-blue-600 italic">Policy</span>
           </h2>
           <p className="text-lg text-slate-500 font-medium mt-4">
-            Your privacy is our priority. Learn how we handle your data at NovaSpace.
+            Effective date: July 2025. NovaSpace (&quot;we&quot;, &quot;us&quot;) operates novaspace.work from Egypt.
           </p>
         </header>
 
@@ -43,10 +44,13 @@ const PrivacyPage: React.FC<PrivacyPageProps> = ({ onBack }) => {
               <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
                 <Lock size={24} />
               </div>
-              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Data Collection</h3>
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Data We Collect</h3>
             </div>
+            <p className="text-slate-600 font-medium leading-relaxed mb-4">
+              We collect information you provide when creating an account, making a booking, contacting support, or using workspace services. This may include your name, email address, phone number, booking preferences, and NovaSpace credit balance.
+            </p>
             <p className="text-slate-600 font-medium leading-relaxed">
-              We collect information that you provide directly to us, such as when you create an account, make a booking, or contact support. This may include your name, email address, phone number, and payment information.
+              We also receive technical data such as device type, browser, IP address, and usage events through Firebase (Google) services that power authentication, hosting, databases, analytics, and error monitoring.
             </p>
           </section>
 
@@ -58,7 +62,22 @@ const PrivacyPage: React.FC<PrivacyPageProps> = ({ onBack }) => {
               <h3 className="text-2xl font-black text-slate-900 tracking-tight">How We Use Data</h3>
             </div>
             <p className="text-slate-600 font-medium leading-relaxed">
-              We use the information we collect to provide, maintain, and improve our services, to process your transactions, and to communicate with you about your bookings and account.
+              We use your information to provide and improve NovaSpace, process bookings and credits, send transactional emails (confirmations, reminders, support replies), prevent fraud, and comply with legal obligations. We do not sell your personal data.
+            </p>
+          </section>
+
+          <section className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-xl">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl">
+                <Cookie size={24} />
+              </div>
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Cookies &amp; Analytics</h3>
+            </div>
+            <p className="text-slate-600 font-medium leading-relaxed mb-4">
+              Essential cookies and local storage are required for sign-in, session management, and security (including reCAPTCHA and optional App Check).
+            </p>
+            <p className="text-slate-600 font-medium leading-relaxed">
+              With your consent, we use Firebase Analytics and optional Crashlytics to understand how the service is used and to diagnose errors. You can accept or decline analytics cookies via the banner shown on your first visit. Declining limits us to essential cookies only.
             </p>
           </section>
 
@@ -67,10 +86,29 @@ const PrivacyPage: React.FC<PrivacyPageProps> = ({ onBack }) => {
               <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
                 <ShieldCheck size={24} />
               </div>
-              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Data Security</h3>
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Retention, Security &amp; Your Rights</h3>
+            </div>
+            <p className="text-slate-600 font-medium leading-relaxed mb-4">
+              Account and booking data are retained while your account is active and as needed for legal, accounting, or dispute purposes. Data is stored on Google Firebase infrastructure with industry-standard safeguards.
+            </p>
+            <p className="text-slate-600 font-medium leading-relaxed">
+              You may request access, correction, or deletion of your personal data by contacting us. Google Sign-In is subject to Google&apos;s privacy policy in addition to this one.
+            </p>
+          </section>
+
+          <section className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-xl">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="p-3 bg-rose-50 text-rose-600 rounded-2xl">
+                <Mail size={24} />
+              </div>
+              <h3 className="text-2xl font-black text-slate-900 tracking-tight">Contact</h3>
             </div>
             <p className="text-slate-600 font-medium leading-relaxed">
-              We implement a variety of security measures to maintain the safety of your personal information when you enter, submit, or access your personal information.
+              For privacy questions or data requests, email{' '}
+              <a href={`mailto:${SUPPORT_EMAIL}`} className="text-blue-600 font-bold hover:underline">
+                {SUPPORT_EMAIL}
+              </a>
+              .
             </p>
           </section>
         </div>

@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { ChevronLeft, Image as ImageIcon, Building2, MapPin, Clock, Upload } from 'lucide-react';
 import { Vendor } from '../types';
+import { useImageCropUpload } from './ImageCropPortal';
 
 interface CreateSpacePageProps {
   onBack: () => void;
@@ -13,18 +14,15 @@ const CreateSpacePage: React.FC<CreateSpacePageProps> = ({ onBack, onCreate }) =
   const [logo, setLogo] = useState('');
   const [locationCount, setLocationCount] = useState<number | ''>('');
   const [access, setAccess] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+  const logoCrop = useImageCropUpload({
+    aspect: 16 / 9,
+    onCrop: async (file) => {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setLogo(reader.result as string);
-      };
+      reader.onloadend = () => setLogo(reader.result as string);
       reader.readAsDataURL(file);
-    }
-  };
+    },
+  });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,16 +80,10 @@ const CreateSpacePage: React.FC<CreateSpacePageProps> = ({ onBack, onCreate }) =
               </label>
               
               <div 
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => logoCrop.openPicker()}
                 className={`w-full h-48 rounded-2xl border-2 border-dashed flex flex-col items-center justify-center cursor-pointer transition-all overflow-hidden relative ${logo ? 'border-blue-400 bg-blue-50' : 'border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300'}`}
               >
-                <input 
-                  type="file" 
-                  ref={fileInputRef}
-                  onChange={handleImageUpload}
-                  accept="image/*"
-                  className="hidden" 
-                />
+                <input {...logoCrop.inputProps} />
                 
                 {logo ? (
                   <>
@@ -175,6 +167,7 @@ const CreateSpacePage: React.FC<CreateSpacePageProps> = ({ onBack, onCreate }) =
           </div>
         </form>
       </main>
+      {logoCrop.cropPortal}
     </div>
   );
 };

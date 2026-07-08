@@ -16,15 +16,7 @@ if (!fs.existsSync(templatePath)) {
   process.exit(1);
 }
 
-const tmpPath = path.join(process.cwd(), '.remote-config-upload.json');
-fs.copyFileSync(templatePath, tmpPath);
-
-try {
-  execSync(
-    'firebase remoteconfig:publish .remote-config-upload.json --project refined-legend-420223',
-    { stdio: 'inherit' },
-  );
-  console.log('Remote Config template published.');
-} finally {
-  fs.unlinkSync(tmpPath);
-}
+execSync('firebase deploy --only remoteconfig --project refined-legend-420223', {
+  stdio: 'inherit',
+});
+console.log('Remote Config template published.');

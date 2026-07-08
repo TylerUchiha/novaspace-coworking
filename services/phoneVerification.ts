@@ -3,6 +3,8 @@ import {
   PhoneAuthProvider,
   RecaptchaVerifier,
   linkWithPhoneNumber,
+  signInWithPhoneNumber,
+  signOut,
   updatePhoneNumber,
 } from 'firebase/auth';
 import { FirebaseError } from 'firebase/app';
@@ -70,11 +72,14 @@ export function parsePhoneNumberParts(
 
   const sorted = [...PHONE_COUNTRY_OPTIONS].sort((a, b) => b.code.length - a.code.length);
   for (const option of sorted) {
-    if (digits.startsWith(option.code) && digits.length > option.code.length + 5) {
-      return {
-        countryCode: option.code,
-        nationalNumber: stripNationalTrunkPrefix(digits.slice(option.code.length)),
-      };
+    if (digits === option.code) {
+      return { countryCode: option.code, nationalNumber: '' };
+    }
+    if (digits.startsWith(option.code)) {
+      const national = stripNationalTrunkPrefix(digits.slice(option.code.length));
+      if (national) {
+        return { countryCode: option.code, nationalNumber: national };
+      }
     }
   }
 
@@ -92,7 +97,9 @@ export function buildPhoneE164FromParts(countryCode: string, nationalNumber: str
 
 /** Full digits without + prefix (e.g. 201211884876). */
 export function buildPhoneDigits(countryCode: string, nationalNumber: string): string {
-  return `${countryCode}${stripNationalTrunkPrefix(normalizePhoneDigits(nationalNumber))}`;
+  const national = stripNationalTrunkPrefix(normalizePhoneDigits(nationalNumber));
+  if (!national) return '';
+  return `${countryCode}${national}`;
 }
 
 export function isValidNationalPhoneNumber(nationalNumber: string): boolean {
@@ -199,7 +206,7 @@ export function destroyRecaptcha(): void {
   removeRecaptchaContainer();
 }
 
-async function getRecaptchaVerifier(): Promise<RecaptchaVerifier> {
+export async function getRecaptchaVerifier(): Promise<RecaptchaVerifier> {
   if (recaptchaVerifier) {
     return recaptchaVerifier;
   }
@@ -264,6 +271,34 @@ export async function sendPhoneVerificationSms(phoneE164: string): Promise<Phone
   } catch (error) {
     destroyRecaptcha();
     throw error;
+  }
+}
+
+export async function sendPasswordResetPhoneSms(phoneE164: string): Promise<ConfirmationResult> {
+  if (isLocalhostPhoneAuthBlocked() && !auth.settings.appVerificationDisabledForTesting) {
+    throw new FirebaseError('auth/invalid-app-credential', 'Phone auth blocked on localhost');
+  }
+
+  const verifier = await getRecaptchaVerifier();
+  try {
+    return await signInWithPhoneNumber(auth, phoneE164, verifier);
+  } catch (error) {
+    destroyRecaptcha();
+    throw error;
+  }
+}
+
+export async function confirmPasswordResetPhoneCode(
+  confirmation: ConfirmationResult,
+  code: string,
+): Promise<void> {
+  await confirmation.confirm(code.replace(/\D/g, ''));
+}
+
+export async function signOutAfterPasswordReset(): Promise<void> {
+  destroyRecaptcha();
+  if (auth.currentUser) {
+    await signOut(auth);
   }
 }
 

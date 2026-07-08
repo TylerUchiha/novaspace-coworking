@@ -18,7 +18,6 @@ import {
   Download,
   X
 } from 'lucide-react';
-import { jsPDF } from 'jspdf';
 import { Reservation, LocationData, Vendor, Room } from '../types';
 
 interface AnalyticsDashboardProps {
@@ -308,7 +307,8 @@ export default function AnalyticsDashboard({
     };
   }, [filteredReservations, roomsMap, menuUsageStats]);
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
+    const { jsPDF } = await import('jspdf');
     // 1. Filter target reservations strictly in the chosen date range
     const targetReservations = reservations.filter(res => {
       if (res.vendorId !== selectedVendor.id) return false;

@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Room, RoomStatus, Floor, LocationData, Vendor, Reservation } from '../types';
 import { ROOM_COLORS } from '../constants';
 import { uploadVendorLogo, uploadRoomImage } from '../services/storageUpload';
+import { useImageCropUpload } from './ImageCropPortal';
 import { Plus, Trash2, Move, Edit3, Settings2, ChevronDown, Sparkles, X, Calendar, MapPin, Layers3, Maximize2, Undo2, Redo2, ArrowRight, Layers, Layout, Globe, Clock, Building2, Info, Map as MapIcon, PlusCircle, Ban, FileText, AlertCircle, Image as ImageIcon, Upload, Trash, ShieldCheck } from 'lucide-react';
 
 interface PropertyConfigProps {
@@ -16,6 +17,8 @@ interface PropertyConfigProps {
   onSwitchFloor: (id: string) => void;
   onUpdateVendor: (vendorId: string, updates: Partial<Vendor>) => void;
   onUpdateLocationMeta: (locId: string, updates: Partial<LocationData>) => void;
+  onStaffCodeFocus?: (locId: string) => void;
+  onStaffCodeBlur?: (locId: string) => void;
   onAddLocation: () => void;
   view?: 'layout' | 'brand' | 'branch' | 'tags';
   onViewChange?: (view: 'layout' | 'brand' | 'branch' | 'tags') => void;
@@ -33,6 +36,8 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
   onSwitchFloor,
   onUpdateVendor,
   onUpdateLocationMeta,
+  onStaffCodeFocus,
+  onStaffCodeBlur,
   onAddLocation,
   allReservations,
   view: externalView = 'layout',
@@ -47,6 +52,7 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
   
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState(false);
   const [policyText, setPolicyText] = useState('');
+  const [staffCodeDraft, setStaffCodeDraft] = useState('');
   
   const [undoStack, setUndoStack] = useState<Room[][]>([]);
   const [redoStack, setRedoStack] = useState<Room[][]>([]);
@@ -57,6 +63,10 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
       setPolicyText(location.cancellationPolicy || '');
     }
   }, [location]);
+
+  useEffect(() => {
+    setStaffCodeDraft(location.staffAccessCode || '');
+  }, [location.id]);
 
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -111,7 +121,42 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
     pushToHistory(newRooms);
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement> | React.DragEvent) => {
+  const roomUploadContextRef = useRef<{ roomId: string; currentImages: string[]; index: number } | null>(null);
+
+  const roomImageCrop = useImageCropUpload({
+    aspect: 16 / 9,
+    onCrop: async (file) => {
+      const ctx = roomUploadContextRef.current;
+      if (!ctx) return;
+      try {
+        const url = await uploadRoomImage(
+          location.id,
+          ctx.roomId,
+          file,
+          `${ctx.roomId}-${Date.now()}-${ctx.index}`,
+        );
+        ctx.currentImages = [...ctx.currentImages, url];
+        ctx.index += 1;
+        handleUpdateField('images', ctx.currentImages);
+      } catch (err) {
+        console.error('Room image upload failed', err);
+      }
+    },
+  });
+
+  const vendorLogoCrop = useImageCropUpload({
+    aspect: 1,
+    onCrop: async (file) => {
+      try {
+        const url = await uploadVendorLogo(vendor.id, file);
+        onUpdateVendor(vendor.id, { logo: url });
+      } catch (err) {
+        console.error('Logo upload failed', err);
+      }
+    },
+  });
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement> | React.DragEvent) => {
     e.preventDefault();
     let files: FileList | null = null;
     if ('files' in e.target && e.target.files) {
@@ -127,17 +172,8 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
     if (imageFiles.length === 0) return;
 
     const currentImages = selectedRooms[0]?.images || [];
-
-    try {
-      const urls = await Promise.all(
-        imageFiles.map((file, index) =>
-          uploadRoomImage(location.id, roomId, file, `${roomId}-${Date.now()}-${index}`),
-        ),
-      );
-      handleUpdateField('images', [...currentImages, ...urls]);
-    } catch (err) {
-      console.error('Room image upload failed', err);
-    }
+    roomUploadContextRef.current = { roomId, currentImages: [...currentImages], index: 0 };
+    roomImageCrop.queueFiles(imageFiles);
   };
 
   const handleDeleteImage = (index: number) => {
@@ -529,15 +565,10 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
                                      type="file"
                                      accept="image/*"
                                      className="hidden"
-                                     onChange={async (e) => {
+                                     onChange={(e) => {
                                        const file = e.target.files?.[0];
-                                       if (!file) return;
-                                       try {
-                                         const url = await uploadVendorLogo(vendor.id, file);
-                                         onUpdateVendor(vendor.id, { logo: url });
-                                       } catch (err) {
-                                         console.error('Logo upload failed', err);
-                                       }
+                                       e.target.value = '';
+                                       if (file) vendorLogoCrop.queueFile(file);
                                      }}
                                    />
                                  </label>
@@ -628,8 +659,15 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
                                 <input 
                                   type="text" 
                                   readOnly={!isOwner}
-                                  value={location.staffAccessCode || ''} 
-                                  onChange={(e) => onUpdateLocationMeta(location.id, { staffAccessCode: e.target.value.toUpperCase() })}
+                                  value={staffCodeDraft} 
+                                  onFocus={() => onStaffCodeFocus?.(location.id)}
+                                  onChange={(e) => setStaffCodeDraft(e.target.value)}
+                                  onBlur={(e) => {
+                                    const normalized = e.target.value.trim().toUpperCase();
+                                    setStaffCodeDraft(normalized);
+                                    onStaffCodeBlur?.(location.id);
+                                    onUpdateLocationMeta(location.id, { staffAccessCode: normalized });
+                                  }}
                                   placeholder="e.g. NS-SF-88"
                                   className="w-full pl-14 pr-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl font-bold text-slate-900 outline-none focus:border-blue-400 focus:bg-white transition-all shadow-sm"
                                 />
@@ -978,6 +1016,9 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
           </div>
         </div>
       )}
+
+      {roomImageCrop.cropPortal}
+      {vendorLogoCrop.cropPortal}
 
     </div>
   );

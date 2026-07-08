@@ -311,7 +311,7 @@ export const LOCATIONS: LocationData[] = [
 ];
 
 export const INITIAL_RESERVATIONS: Reservation[] = [
-  { id: 'res-1', roomId: '102', locationId: 'sf-main', floorId: 'sf-f4', vendorId: 'v-novaspace', date: new Date().toISOString().split('T')[0], time: '10:00', duration: 2, userName: 'Alex Rivera', userEmail: 'alex.rivera@novaspace.ai', status: 'approved', createdAt: Date.now() - 3600000 },
+  { id: 'res-1', roomId: '102', locationId: 'sf-main', floorId: 'sf-f4', vendorId: 'v-novaspace', date: new Date().toISOString().split('T')[0], time: '10:00', duration: 2, userName: 'Alex Rivera', userEmail: 'alex.rivera@novaspace.work', status: 'approved', createdAt: Date.now() - 3600000 },
 ];
 
 export const ROOM_COLORS: Record<RoomStatus, string> = {

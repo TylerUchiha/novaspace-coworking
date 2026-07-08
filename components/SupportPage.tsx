@@ -1,8 +1,10 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { ChevronLeft, LifeBuoy, Mail, MessageSquare, Send, X, Bot, User as UserIcon, Loader2, CheckCircle2 } from 'lucide-react';
+import { FirebaseError } from 'firebase/app';
 import { detectLanguageDialectResponse } from '../services/geminiService';
-import { supportChatRemote } from '../services/cloudFunctions';
+import { submitSupportInquiryRemote, supportChatRemote } from '../services/cloudFunctions';
+import { SUPPORT_EMAIL } from '../constants/contact';
 
 interface SupportPageProps {
   onBack: () => void;
@@ -44,23 +46,50 @@ const SupportPage: React.FC<SupportPageProps> = ({ onBack }) => {
 
   const [emailFormError, setEmailFormError] = useState<string | null>(null);
 
+  const mapSupportInquiryError = (error: unknown): string => {
+    if (error instanceof FirebaseError) {
+      if (error.code === 'functions/invalid-argument' || error.code === 'functions/failed-precondition') {
+        return error.message || 'Please check your form and try again.';
+      }
+      return error.message || 'Could not send your message. Please email us directly.';
+    }
+    if (error instanceof Error && error.message) {
+      return error.message;
+    }
+    return 'Could not send your message. Please email us directly.';
+  };
+
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (emailFormData.number.length !== 11) {
-      setEmailFormError("Please enter exactly 11 digits.");
+      setEmailFormError('Please enter exactly 11 digits.');
+      return;
+    }
+    if (emailFormData.inquiry.trim().length < 10) {
+      setEmailFormError('Please describe your inquiry in at least 10 characters.');
       return;
     }
     setEmailFormError(null);
     setIsEmailSending(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    setIsEmailSending(false);
-    setEmailSent(true);
-    setTimeout(() => {
-      setIsEmailModalOpen(false);
-      setEmailSent(false);
-      setEmailFormData({ name: '', number: '', email: '', inquiry: '' });
-    }, 2000);
+    try {
+      await submitSupportInquiryRemote({
+        name: emailFormData.name,
+        number: emailFormData.number,
+        email: emailFormData.email,
+        inquiry: emailFormData.inquiry,
+      });
+      setEmailSent(true);
+      setTimeout(() => {
+        setIsEmailModalOpen(false);
+        setEmailSent(false);
+        setEmailFormData({ name: '', number: '', email: '', inquiry: '' });
+      }, 2000);
+    } catch (error) {
+      console.error('Support inquiry error:', error);
+      setEmailFormError(mapSupportInquiryError(error));
+    } finally {
+      setIsEmailSending(false);
+    }
   };
 
   const handleSendMessage = async () => {
@@ -89,7 +118,7 @@ const SupportPage: React.FC<SupportPageProps> = ({ onBack }) => {
     } catch (error) {
       console.error("AI Chat Error:", error);
       await new Promise(resolve => setTimeout(resolve, 1000));
-      setMessages(prev => [...prev, { role: 'model', text: "Sorry, I'm having trouble connecting right now. Please try again later or email us." }]);
+      setMessages(prev => [...prev, { role: 'model', text: `Sorry, I'm having trouble connecting right now. Please try again later or email ${SUPPORT_EMAIL}.` }]);
     } finally {
       setIsLoading(false);
     }
@@ -127,7 +156,13 @@ const SupportPage: React.FC<SupportPageProps> = ({ onBack }) => {
               <Mail size={28} />
             </div>
             <h3 className="text-xl font-black text-slate-900 mb-2">Email Support</h3>
-            <p className="text-slate-500 font-medium mb-6">Get in touch with our team via email for any inquiries.</p>
+            <p className="text-slate-500 font-medium mb-4">Get in touch with our team via email for any inquiries.</p>
+            <a
+              href={`mailto:${SUPPORT_EMAIL}`}
+              className="text-blue-600 font-black text-sm tracking-wide hover:underline mb-6"
+            >
+              {SUPPORT_EMAIL}
+            </a>
             <button 
               onClick={() => setIsEmailModalOpen(true)}
               className="mt-auto text-blue-600 font-black uppercase text-xs tracking-widest hover:underline"
@@ -247,10 +282,11 @@ const SupportPage: React.FC<SupportPageProps> = ({ onBack }) => {
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Inquiry</label>
                     <textarea 
                       required
+                      minLength={10}
                       rows={4}
                       value={emailFormData.inquiry}
                       onChange={(e) => setEmailFormData({...emailFormData, inquiry: e.target.value})}
-                      placeholder="How can we help you?"
+                      placeholder="How can we help you? (at least 10 characters)"
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all resize-none"
                     />
                   </div>

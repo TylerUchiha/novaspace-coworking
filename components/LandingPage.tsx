@@ -4,7 +4,11 @@ import { Building2, ArrowRight, User, ShieldCheck, Mail, Lock, UserPlus, Phone, 
 import { motion, useInView } from 'motion/react';
 import { useAuth } from './AuthProvider';
 import PhoneNumberInput from './PhoneNumberInput';
+import ForgotPasswordModal from './ForgotPasswordModal';
+import RecaptchaWidget, { RecaptchaWidgetHandle } from './RecaptchaWidget';
 import { useRemoteConfig } from './RemoteConfigProvider';
+import { verifyRecaptchaRemote } from '../services/cloudFunctions';
+import { isRecaptchaRequired } from '../services/recaptcha';
 
 interface LandingPageProps {
   onCodeLogin: (code: string) => boolean | Promise<boolean>;
@@ -119,6 +123,33 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [recaptchaError, setRecaptchaError] = useState<string | null>(null);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [termsError, setTermsError] = useState(false);
+  const recaptchaRef = useRef<RecaptchaWidgetHandle>(null);
+
+  const verifyRecaptchaChallenge = async (): Promise<boolean> => {
+    if (!isRecaptchaRequired()) {
+      return true;
+    }
+
+    const token = recaptchaRef.current?.getToken();
+    if (!token) {
+      setRecaptchaError('Please complete the reCAPTCHA challenge.');
+      return false;
+    }
+
+    try {
+      await verifyRecaptchaRemote(token);
+      setRecaptchaError(null);
+      return true;
+    } catch {
+      recaptchaRef.current?.reset();
+      setRecaptchaError('reCAPTCHA verification failed. Please try again.');
+      return false;
+    }
+  };
 
   const handleOwnerSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,7 +185,6 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
         const success = await onCodeLogin(accessCode);
         if (!success) {
           setCodeError(true);
-          setTimeout(() => setCodeError(false), 2000);
         }
       } finally {
         setIsSubmitting(false);
@@ -164,12 +194,23 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
 
     setIsSubmitting(true);
     try {
+      const recaptchaPassed = await verifyRecaptchaChallenge();
+      if (!recaptchaPassed) {
+        return;
+      }
+
       if (isSignUp) {
+        if (!agreedToTerms) {
+          setTermsError(true);
+          return;
+        }
         await signUpWithEmail(email, password, { name: fullName, phone });
       } else {
         await signInWithEmail(email, password);
       }
+      recaptchaRef.current?.reset();
     } catch {
+      recaptchaRef.current?.reset();
       // authError set in provider
     } finally {
       setIsSubmitting(false);
@@ -178,10 +219,24 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
 
   const handleGoogleSignIn = async () => {
     clearAuthError();
+    setRecaptchaError(null);
+
+    if (isSignUp && !agreedToTerms) {
+      setTermsError(true);
+      return;
+    }
+
     setIsSubmitting(true);
     try {
+      const recaptchaPassed = await verifyRecaptchaChallenge();
+      if (!recaptchaPassed) {
+        return;
+      }
+
       await signInWithGoogle();
+      recaptchaRef.current?.reset();
     } catch {
+      recaptchaRef.current?.reset();
       // authError set in provider
     } finally {
       setIsSubmitting(false);
@@ -292,7 +347,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
             {/* Role Switcher */}
             <div className="flex p-2 bg-white rounded-full border border-slate-200 shadow-sm">
               <button 
-                onClick={() => { setActiveTab('customer'); setIsSignUp(false); }}
+                onClick={() => { setActiveTab('customer'); setIsSignUp(false); setRecaptchaError(null); }}
                 className={`flex-1 flex items-center justify-center gap-3 py-4 rounded-full font-black text-sm transition-all ${
                   activeTab === 'customer' 
                     ? 'bg-blue-50 text-blue-600 shadow-sm' 
@@ -303,7 +358,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
                 CUSTOMER
               </button>
               <button 
-                onClick={() => { setActiveTab('employee'); setIsSignUp(false); }}
+                onClick={() => { setActiveTab('employee'); setIsSignUp(false); setRecaptchaError(null); }}
                 className={`flex-1 flex items-center justify-center gap-3 py-4 rounded-full font-black text-sm transition-all ${
                   activeTab === 'employee' 
                     ? 'bg-emerald-50 text-emerald-600 shadow-sm' 
@@ -335,27 +390,40 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
                 </div>
               )}
 
+              {recaptchaError && activeTab === 'customer' && (
+                <div className="mb-6 flex items-start gap-3 p-4 bg-amber-50 border border-amber-100 rounded-2xl text-amber-800">
+                  <AlertCircle size={18} className="shrink-0 mt-0.5" />
+                  <p className="text-sm font-bold leading-snug">{recaptchaError}</p>
+                </div>
+              )}
+
               <form className="space-y-5" onSubmit={handleSubmit}>
                 {activeTab === 'employee' ? (
                   <div className="space-y-6">
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Branch Access Code</label>
                       <div className="relative group">
-                        <ShieldCheck className={`absolute left-5 top-1/2 -translate-y-1/2 transition-colors ${codeError ? 'text-rose-500' : 'text-slate-300 group-focus-within:text-emerald-500'}`} size={20} />
+                        <ShieldCheck className={`absolute left-5 top-1/2 -translate-y-1/2 transition-colors ${codeError || authError ? 'text-rose-500' : 'text-slate-300 group-focus-within:text-emerald-500'}`} size={20} />
                         <input 
                           type="text" 
                           placeholder="NS-SF-88"
                           value={accessCode}
-                          onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
+                          onChange={(e) => {
+                            setAccessCode(e.target.value.toUpperCase());
+                            setCodeError(false);
+                            clearAuthError();
+                          }}
                           className={`w-full pl-14 pr-6 py-4.5 bg-slate-50 border rounded-2xl outline-none focus:bg-white focus:ring-4 transition-all font-bold tracking-widest ${
-                            codeError 
+                            codeError || authError
                               ? 'border-rose-400 focus:border-rose-400 ring-rose-50 text-rose-600' 
                               : 'border-slate-100 focus:border-emerald-400 ring-emerald-50 text-slate-900 shadow-sm'
                           }`}
                         />
                       </div>
-                      {codeError && (
-                        <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest ml-1">Invalid branch access code</p>
+                      {(codeError || authError) && (
+                        <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest ml-1">
+                          {authError || 'Invalid branch access code'}
+                        </p>
                       )}
                     </div>
 
@@ -401,7 +469,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
                         <Mail className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-blue-500 transition-colors" size={20} />
                         <input 
                           type="email" 
-                          placeholder="alex@novaspace.ai"
+                          placeholder="alex@novaspace.work"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           required
@@ -426,7 +494,13 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
                       <div className="flex justify-between items-center px-1">
                         <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Password</label>
                         {!isSignUp && (
-                          <button type="button" className="text-[10px] font-black text-blue-600 hover:text-blue-700">FORGOT?</button>
+                          <button
+                            type="button"
+                            onClick={() => setShowForgotPassword(true)}
+                            className="text-[10px] font-black text-blue-600 hover:text-blue-700"
+                          >
+                            FORGOT?
+                          </button>
                         )}
                       </div>
                       <div className="relative group">
@@ -443,6 +517,42 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
                         />
                       </div>
                     </div>
+
+                    <RecaptchaWidget
+                      ref={recaptchaRef}
+                      key={isSignUp ? 'signup' : 'signin'}
+                    />
+
+                    {isSignUp && (
+                      <label className="flex items-start gap-3 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={agreedToTerms}
+                          onChange={(e) => {
+                            setAgreedToTerms(e.target.checked);
+                            setTermsError(false);
+                          }}
+                          className="mt-1 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className="text-sm font-medium text-slate-500 leading-relaxed">
+                          I agree to the{' '}
+                          <button type="button" onClick={onShowTerms} className="text-blue-600 font-bold hover:underline">
+                            Terms of Service
+                          </button>{' '}
+                          and{' '}
+                          <button type="button" onClick={onShowPrivacy} className="text-blue-600 font-bold hover:underline">
+                            Privacy Policy
+                          </button>
+                          .
+                        </span>
+                      </label>
+                    )}
+
+                    {termsError && (
+                      <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest ml-1">
+                        Please accept the Terms and Privacy Policy to create an account.
+                      </p>
+                    )}
 
                     <button 
                       type="submit"
@@ -488,7 +598,7 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
                   <p className="text-sm font-bold text-slate-400">
                     {isSignUp ? 'Already have an account?' : "Don't have an account yet?"}
                     <button 
-                      onClick={() => setIsSignUp(!isSignUp)}
+                      onClick={() => { setIsSignUp(!isSignUp); setRecaptchaError(null); setAgreedToTerms(false); setTermsError(false); }}
                       className="ml-2 text-blue-600 font-black hover:underline underline-offset-4 flex items-center gap-1 inline-flex"
                     >
                       {isSignUp ? 'Login instead' : 'Join NovaSpace'}
@@ -579,6 +689,14 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
       </footer>
 
       {/* Owner Global Access Modal */}
+      {showForgotPassword && (
+        <ForgotPasswordModal
+          initialEmail={email}
+          phoneFallbackEnabled={featurePhoneAuthEnabled}
+          onClose={() => setShowForgotPassword(false)}
+        />
+      )}
+
       {isOwnerModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
           <motion.div 

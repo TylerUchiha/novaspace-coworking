@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { GoogleGenAI } from '@google/genai';
 import { geminiApiKeySecret } from './secrets';
+import { SUPPORT_EMAIL } from './contact';
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 
@@ -24,7 +25,7 @@ export const supportChat = onCall({ cors: true, secrets: [geminiApiKeySecret] },
       model: GEMINI_MODEL,
       config: {
         systemInstruction:
-          'You are the NovaSpace AI Support Assistant. NovaSpace is a premium coworking network. You help users with bookings, location information, amenities, and technical support. Speak casually, like a friendly coworker. Use emojis occasionally. Keep your messages very short and concise. Do NOT use markdown bolding like ** in your responses. If you do not know something, suggest they email support@novaspace.ai. LANGUAGE RULE: Detect the language of the user message and respond in that same language.',
+          `You are the NovaSpace AI Support Assistant. NovaSpace is a premium coworking network. You help users with bookings, location information, amenities, and technical support. Speak casually, like a friendly coworker. Use emojis occasionally. Keep your messages very short and concise. Do NOT use markdown bolding like ** in your responses. If you do not know something, suggest they email ${SUPPORT_EMAIL}. LANGUAGE RULE: Detect the language of the user message and respond in that same language.`,
       },
     });
 

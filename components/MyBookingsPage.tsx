@@ -2,12 +2,13 @@
 import React, { useState } from 'react';
 import { Reservation, LocationData, Vendor } from '../types';
 import { Calendar, Clock, MapPin, XCircle, CheckCircle2, History, ShieldCheck, AlertCircle } from 'lucide-react';
+import { useRemoteConfig } from './RemoteConfigProvider';
 
 interface MyBookingsPageProps {
   reservations: Reservation[];
   locations: LocationData[];
   vendors: Vendor[];
-  userName: string;
+  userId?: string;
   onCancel: (id: string) => void;
 }
 
@@ -17,6 +18,15 @@ interface BookingCardProps {
   onCancel: (id: string) => void;
   locationName: string;
   vendor: Vendor | undefined;
+}
+
+function isBookingUpcoming(res: Reservation): boolean {
+  const now = Date.now();
+  const [h, m] = res.time.split(':').map(Number);
+  const start = new Date(`${res.date}T00:00:00`);
+  start.setHours(h || 0, m || 0, 0, 0);
+  const endMs = start.getTime() + res.duration * 60 * 60 * 1000;
+  return endMs >= now;
 }
 
 const BookingCard: React.FC<BookingCardProps> = ({ res, isCurrent, onCancel, locationName, vendor }) => (
@@ -84,19 +94,24 @@ const BookingCard: React.FC<BookingCardProps> = ({ res, isCurrent, onCancel, loc
   </div>
 );
 
-const MyBookingsPage: React.FC<MyBookingsPageProps> = ({ reservations, locations, vendors, userName, onCancel }) => {
+const MyBookingsPage: React.FC<MyBookingsPageProps> = ({ reservations, locations, vendors, userId, onCancel }) => {
+  const { defaultCancellationPolicyText } = useRemoteConfig();
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   
-  const userReservations = reservations.filter(r => r.userName === userName);
+  const userReservations = userId
+    ? reservations.filter((r) => r.userId === userId)
+    : [];
   
-  const currentBookings = userReservations.filter(r => {
-    // Only show pending reservations in Active & Upcoming
-    return r.status === 'pending';
+  const currentBookings = userReservations.filter((r) => {
+    if (r.status === 'declined') return false;
+    if (r.status === 'pending') return true;
+    if (r.status === 'approved') return isBookingUpcoming(r);
+    return false;
   }).sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
 
-  const previousBookings = userReservations.filter(r => {
-    // Show approved and declined reservations in Booking History
-    return r.status === 'approved' || r.status === 'declined';
+  const previousBookings = userReservations.filter((r) => {
+    if (r.status === 'declined') return true;
+    return !isBookingUpcoming(r);
   }).sort((a, b) => b.date.localeCompare(a.date) || b.time.localeCompare(a.time));
 
   const getLocationName = (id: string) => locations.find(l => l.id === id)?.name || 'Unknown Location';
@@ -115,7 +130,10 @@ const MyBookingsPage: React.FC<MyBookingsPageProps> = ({ reservations, locations
   const cancellingRes = cancellingId ? reservations.find(r => r.id === cancellingId) : null;
   const cancellingVendor = cancellingRes ? vendors.find(v => v.id === cancellingRes.vendorId) : null;
   const cancellingLocation = cancellingRes ? locations.find(l => l.id === cancellingRes.locationId) : null;
-  const currentPolicy = cancellingLocation?.cancellationPolicy || cancellingVendor?.cancellationPolicy;
+  const currentPolicy =
+    cancellingLocation?.cancellationPolicy?.trim() ||
+    cancellingVendor?.cancellationPolicy?.trim() ||
+    defaultCancellationPolicyText;
 
   return (
     <div className="flex-1 bg-slate-50/30 overflow-y-auto p-10 font-['Inter']">
@@ -171,7 +189,6 @@ const MyBookingsPage: React.FC<MyBookingsPageProps> = ({ reservations, locations
         </section>
       </div>
 
-      {/* Cancellation Confirmation Modal */}
       {cancellingId && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={() => setCancellingId(null)} />

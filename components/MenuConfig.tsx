@@ -1,14 +1,17 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { MenuItem, Vendor, Category, LocationData, Room, UserProfile, Reservation } from '../types';
-import { Plus, Minus, Search, CheckCircle, Coffee, User, CreditCard, Coins, Banknote, MapPin, X, Edit, Trash2, Save, Image as ImageIcon } from 'lucide-react';
+import { Plus, Minus, Search, CheckCircle, Coffee, User, CreditCard, Coins, Banknote, MapPin, X } from 'lucide-react';
 import { UserAvatar } from './UserAvatar';
-import { uploadMenuImage } from '../services/storageUpload';
+import MenuEditor from './MenuEditor';
+import { mergeMenuCatalog } from '../utils/menuCatalog';
+import { createWalkInMemberRemote } from '../services/cloudFunctions';
 
 interface MenuConfigProps {
   vendor: Vendor;
   onUpdateVendor: (vendor: Vendor) => void;
   location: LocationData;
   onUpdateLocation: (updates: Partial<LocationData> | ((prev: LocationData) => Partial<LocationData>)) => void;
+  onUpdateRoomMenu?: (roomId: string, patch: Partial<{ categories: Category[]; menu: MenuItem[] }>) => void;
   userRole: 'customer' | 'employee' | 'owner';
   allUsers?: UserProfile[];
   allReservations?: Reservation[];
@@ -27,13 +30,30 @@ interface MenuConfigProps {
     totalPrice: number,
     orderComment?: string,
     paymentMethod?: string
-  ) => void;
+  ) => void | Promise<void>;
 }
 
-const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocation, userRole, allUsers = [], allReservations = [], onBook, onAppendToReservation }) => {
-  const currentTarget = useMemo(() => {
-    return { categories: location.categories || [], menu: location.menu || [] };
-  }, [location]);
+const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocation, onUpdateVendor, onUpdateRoomMenu, userRole, allUsers = [], allReservations = [], onBook, onAppendToReservation }) => {
+  const [ownerMenuScope, setOwnerMenuScope] = useState<'branch' | 'network' | 'room'>('branch');
+  const [selectedRoomMenuId, setSelectedRoomMenuId] = useState('');
+
+  const allRooms = useMemo(
+    () => location.floors.flatMap((floor) => floor.rooms),
+    [location.floors],
+  );
+
+  useEffect(() => {
+    if (!selectedRoomMenuId && allRooms.length > 0) {
+      setSelectedRoomMenuId(allRooms[0].id);
+    }
+  }, [allRooms, selectedRoomMenuId]);
+
+  const selectedRoom = allRooms.find((room) => room.id === selectedRoomMenuId) || null;
+
+  const currentTarget = useMemo(
+    () => mergeMenuCatalog({ vendor, location }),
+    [vendor, location],
+  );
 
   const [activeCategory, setActiveCategory] = useState<Category | null>(currentTarget.categories.length > 0 ? currentTarget.categories[0] : null);
   
@@ -45,6 +65,8 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
 
   const [userMode, setUserMode] = useState<'select' | 'create' | 'guest'>('select');
   const [newUser, setNewUser] = useState({ name: '', email: '', phone: '' });
+  const [memberCreating, setMemberCreating] = useState(false);
+  const [memberCreateError, setMemberCreateError] = useState<string | null>(null);
 
   const [searchUser, setSearchUser] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -67,6 +89,17 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
     // Could filter by today/current time in a real app
     return allReservations.filter(r => r.locationId === location.id && r.status !== 'declined');
   }, [allReservations, location.id]);
+
+  const switchUserMode = (mode: 'select' | 'create' | 'guest') => {
+    setUserMode(mode);
+    setSearchUser('');
+    if (mode === 'guest') {
+      setSelectedCustomerId('guest');
+    } else {
+      setSelectedCustomerId('');
+    }
+    if (mode === 'create') setNewUser({ name: '', email: '', phone: '' });
+  };
 
   const filteredUsers = useMemo(() => {
     return allUsers.filter(u => u.name.toLowerCase().includes(searchUser.toLowerCase()) || u.email.toLowerCase().includes(searchUser.toLowerCase()));
@@ -106,14 +139,14 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
   const totalValue = Object.entries(orderBasket)
     .reduce((sum, [id, qty]) => sum + (currentTarget.menu.find(i => i.id === id)?.price || 0) * (qty as number), 0);
 
-  const handlePlaceOrder = () => {
-    let targetUser;
+  const handlePlaceOrder = async () => {
+    let targetUser: UserProfile | undefined;
 
     if (userMode === 'guest') {
       targetUser = {
         name: 'Guest User',
-        email: `guest_${Date.now()}@novaspace.ai`,
-        role: 'Member',
+        email: `guest_${Date.now()}@novaspace.work`,
+        role: 'customer',
         pfp: '',
         phone: '',
         credits: 0,
@@ -121,16 +154,18 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
         profession: 'Guest'
       };
     } else if (userMode === 'create') {
-      targetUser = {
-        name: newUser.name,
-        email: newUser.email,
-        role: 'Member',
-        pfp: `https://picsum.photos/400/400?seed=${newUser.name}`,
-        phone: newUser.phone,
-        credits: 0,
-        paymentMethods: [],
-        profession: 'New Member'
-      };
+      if (!newUser.name || !newUser.email || !newUser.phone) return;
+      setMemberCreating(true);
+      setMemberCreateError(null);
+      try {
+        const result = await createWalkInMemberRemote(newUser);
+        targetUser = { ...(result.profile as unknown as UserProfile), uid: result.uid, role: 'customer' };
+      } catch (error) {
+        setMemberCreateError(error instanceof Error ? error.message : 'Could not create member account.');
+        setMemberCreating(false);
+        return;
+      }
+      setMemberCreating(false);
     } else {
       targetUser = allUsers.find(u => u.email === selectedCustomerId);
       if (!targetUser) return;
@@ -148,8 +183,7 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
     if (basketItems.length === 0) return;
 
     if (selectedReservationId && onAppendToReservation) {
-      // Append to existing reservation
-      onAppendToReservation(selectedReservationId, basketItems, totalValue, orderGeneralNote, orderPaymentMethod);
+      await onAppendToReservation(selectedReservationId, basketItems, totalValue, orderGeneralNote, orderPaymentMethod);
       setOrderSuccessMessage('Order placed and added to reservation!');
     } else if (onBook && selectedRoomId) {
       // Create new dummy reservation for walk-in/room
@@ -179,7 +213,85 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
   };
 
   if (userRole === 'owner') {
-    return <MenuManager location={location} onUpdateLocation={onUpdateLocation} />;
+    return (
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="px-10 pt-8 flex gap-2">
+          <button
+            onClick={() => setOwnerMenuScope('branch')}
+            className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${
+              ownerMenuScope === 'branch' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-400 border border-slate-200'
+            }`}
+          >
+            Branch Menu
+          </button>
+          <button
+            onClick={() => setOwnerMenuScope('network')}
+            className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${
+              ownerMenuScope === 'network' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-400 border border-slate-200'
+            }`}
+          >
+            Network Menu
+          </button>
+          {allRooms.length > 0 && (
+            <button
+              onClick={() => setOwnerMenuScope('room')}
+              className={`px-5 py-2.5 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${
+                ownerMenuScope === 'room' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-400 border border-slate-200'
+              }`}
+            >
+              Room Menu
+            </button>
+          )}
+        </div>
+        {ownerMenuScope === 'branch' ? (
+          <MenuEditor
+            scope="location"
+            scopeId={location.id}
+            title="Branch Menu"
+            subtitle={`Add, edit, or remove categories and menu items for ${location.name}. Synced to the customer portal.`}
+            categories={location.categories || []}
+            menu={location.menu || []}
+            onUpdate={(patch) => onUpdateLocation(patch)}
+          />
+        ) : ownerMenuScope === 'network' ? (
+          <MenuEditor
+            scope="vendor"
+            scopeId={vendor.id}
+            title="Network Menu"
+            subtitle="Global menu items shared across all branches unless overridden locally."
+            categories={vendor.categories || []}
+            menu={vendor.menu || []}
+            onUpdate={(patch) => onUpdateVendor({ ...vendor, ...patch })}
+          />
+        ) : selectedRoom && onUpdateRoomMenu ? (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="px-10 pt-4">
+              <select
+                value={selectedRoomMenuId}
+                onChange={(e) => setSelectedRoomMenuId(e.target.value)}
+                className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl font-black text-sm text-slate-700 outline-none"
+              >
+                {allRooms.map((room) => (
+                  <option key={room.id} value={room.id}>
+                    {room.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <MenuEditor
+              scope="room"
+              scopeId={selectedRoom.id}
+              locationId={location.id}
+              title="Room Menu"
+              subtitle={`Room-specific items for ${selectedRoom.name}. Shown together with branch and network menus.`}
+              categories={selectedRoom.categories || []}
+              menu={selectedRoom.menu || []}
+              onUpdate={(patch) => onUpdateRoomMenu(selectedRoom.id, patch)}
+            />
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   return (
@@ -311,22 +423,15 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
                        Assign to Customer
                      </label>
                      <div className="flex gap-2">
-                        <button onClick={() => { setUserMode('select'); setSelectedCustomerId(''); }} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${userMode === 'select' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>EXISTING</button>
-                        <button onClick={() => { setUserMode('create'); setSelectedCustomerId(''); }} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${userMode === 'create' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>NEW ACCOUNT</button>
-                        <button onClick={() => { setUserMode('guest'); setSelectedCustomerId('guest'); }} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${userMode === 'guest' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>GUEST</button>
+                        <button onClick={() => switchUserMode('select')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${userMode === 'select' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>EXISTING</button>
+                        <button onClick={() => switchUserMode('create')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${userMode === 'create' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>NEW ACCOUNT</button>
+                        <button onClick={() => switchUserMode('guest')} className={`text-[8px] font-black px-2 py-1 rounded transition-all ${userMode === 'guest' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400'}`}>GUEST</button>
                      </div>
                   </div>
 
+                  <div key={userMode}>
                   {userMode === 'guest' ? (
-                    <div className="p-4 bg-slate-50 border border-slate-100 rounded-2xl flex items-center gap-3">
-                       <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center text-slate-500 font-black shrink-0">
-                          G
-                       </div>
-                       <div>
-                          <h4 className="text-sm font-black text-slate-800">Guest Checkout</h4>
-                          <p className="text-[10px] font-bold text-slate-400">No account will be created</p>
-                       </div>
-                    </div>
+                    <div className="min-h-[80px]" aria-label="Guest order — no account required" />
                   ) : userMode === 'create' ? (
                     <div className="space-y-3">
                        <input 
@@ -404,6 +509,7 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
                       })()}
                     </>
                   )}
+                  </div>
                 </div>
 
                 {/* 2. Room / Reservation Link */}
@@ -521,12 +627,15 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
              <span className="text-2xl font-black text-blue-600 tracking-tighter">{totalValue} <span className="text-sm">EGP</span></span>
            </div>
            
+           {memberCreateError && (
+             <p className="mb-3 text-xs font-bold text-rose-600">{memberCreateError}</p>
+           )}
            <button
              onClick={handlePlaceOrder}
-             disabled={totalValue === 0 || (userMode === 'select' ? !selectedCustomerId : (userMode === 'create' ? (!newUser.name || !newUser.email || !newUser.phone) : false)) || !selectedRoomId}
+             disabled={memberCreating || totalValue === 0 || (userMode === 'select' ? !selectedCustomerId : (userMode === 'create' ? (!newUser.name || !newUser.email || !newUser.phone) : false)) || !selectedRoomId}
              className="w-full bg-slate-900 text-white font-black text-xs uppercase tracking-widest py-4 rounded-2xl hover:bg-slate-800 disabled:opacity-20 disabled:cursor-not-allowed transition-all shadow-xl shadow-slate-200"
            >
-             Place Order
+             {memberCreating ? 'Creating Member...' : 'Place Order'}
            </button>
          </div>
       </div>
@@ -534,257 +643,5 @@ const MenuConfig: React.FC<MenuConfigProps> = ({ vendor, location, onUpdateLocat
   );
 };
 
-const MenuManager: React.FC<{ location: LocationData; onUpdateLocation: (updates: Partial<LocationData> | ((prev: LocationData) => Partial<LocationData>)) => void }> = ({ location, onUpdateLocation }) => {
-  const categories = location.categories || [];
-  const menuItems = location.menu || [];
-  
-  const [activeCategory, setActiveCategory] = useState<Category | null>(categories.length > 0 ? categories[0] : null);
-
-  // States for Category form
-  const [isAddingCategory, setIsAddingCategory] = useState(false);
-  const [catName, setCatName] = useState('');
-  
-  // States for Item form
-  const [isAddingItem, setIsAddingItem] = useState(false);
-  const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
-  const [itemName, setItemName] = useState('');
-  const [itemPrice, setItemPrice] = useState(0);
-  const [itemDesc, setItemDesc] = useState('');
-  const [itemImg, setItemImg] = useState('');
-
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const itemId = editingItem?.id || `item-${Date.now()}`;
-      const url = await uploadMenuImage('location', location.id, itemId, file);
-      setItemImg(url);
-    } catch {
-      const reader = new FileReader();
-      reader.onloadend = () => setItemImg(reader.result as string);
-      reader.readAsDataURL(file);
-    }
-  };
-  
-  const handleSaveCategory = () => {
-    if (!catName) {
-      setIsAddingCategory(false);
-      return;
-    }
-    const newCat = { id: `cat-${Date.now()}`, name: catName };
-    onUpdateLocation(prev => ({
-      categories: [...(prev.categories || []), newCat]
-    }));
-    setActiveCategory(newCat);
-    setIsAddingCategory(false);
-    setCatName('');
-  };
-  
-  const handleDeleteCategory = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    onUpdateLocation(prev => {
-      const categoryName = prev.categories?.find(c => c.id === id)?.name;
-      return {
-        categories: (prev.categories || []).filter(c => c.id !== id),
-        menu: (prev.menu || []).filter(m => m.category !== categoryName)
-      };
-    });
-    if (activeCategory?.id === id) {
-       setActiveCategory(categories.find(c => c.id !== id) || null);
-    }
-  };
-
-  const handleSaveItem = () => {
-    if (!itemName || !activeCategory) return;
-    onUpdateLocation(prev => {
-      const prevMenu = prev.menu || [];
-      if (editingItem) {
-        return { menu: prevMenu.map(m => m.id === editingItem.id ? { ...m, name: itemName, price: itemPrice, description: itemDesc, category: activeCategory.name, image: itemImg || 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=400' } : m) };
-      } else {
-        return { menu: [...prevMenu, { id: `item-${Date.now()}`, name: itemName, price: itemPrice, description: itemDesc, category: activeCategory.name, image: itemImg || 'https://images.unsplash.com/photo-1541167760496-1628856ab772?auto=format&fit=crop&q=80&w=400' }] };
-      }
-    });
-    setEditingItem(null);
-    setIsAddingItem(false);
-    setItemName('');
-    setItemPrice(0);
-    setItemDesc('');
-    setItemImg('');
-  };
-
-  const handleDeleteItem = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    onUpdateLocation(prev => ({
-      menu: (prev.menu || []).filter(m => m.id !== id)
-    }));
-  };
-
-  const currentCategoryItems = menuItems.filter(m => activeCategory && m.category === activeCategory.name);
-
-  return (
-    <div className="flex-1 bg-slate-50/30 overflow-hidden font-['Inter'] flex flex-col">
-       <header className="p-10 pb-6 shrink-0 border-b border-slate-200">
-         <div className="flex items-center justify-between">
-           <div>
-             <div className="flex items-center gap-2 mb-2">
-               <span className="px-2 py-0.5 bg-blue-100 text-blue-600 text-[9px] font-black uppercase tracking-[0.2em] rounded-md">Global Access</span>
-             </div>
-             <h2 className="text-4xl font-black text-slate-900 tracking-tighter mb-2">Menu Management</h2>
-             <p className="text-slate-500 font-medium italic">Add, edit, or remove categories and menu items for this branch.</p>
-           </div>
-         </div>
-       </header>
-
-       {/* Toolbar for Categories */}
-       <div className="px-10 py-4 bg-white border-b border-slate-200 flex items-center gap-3 overflow-x-auto custom-scrollbar shrink-0">
-          {categories.map(cat => (
-            <div key={cat.id} className="relative group">
-              <button 
-                onClick={() => setActiveCategory(cat)}
-                className={`px-6 py-2.5 rounded-full font-black text-sm transition-all flex items-center gap-2 ${activeCategory?.id === cat.id ? 'bg-slate-900 text-white shadow-md' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-              >
-                {cat.name}
-              </button>
-              <button 
-                onClick={(e) => handleDeleteCategory(cat.id, e)}
-                className="absolute -top-1 -right-1 w-5 h-5 bg-rose-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm scale-90 hover:scale-100"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-          
-          {isAddingCategory ? (
-            <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-full pl-4">
-              <input 
-                type="text" 
-                value={catName} 
-                onChange={e => setCatName(e.target.value)} 
-                placeholder="Category name" 
-                autoFocus
-                onKeyDown={(e) => { if(e.key === 'Enter') handleSaveCategory(); else if(e.key === 'Escape') setIsAddingCategory(false); }}
-                className="bg-transparent border-none outline-none text-sm font-bold text-slate-800 w-32" 
-              />
-              <button onClick={handleSaveCategory} className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-sm hover:bg-blue-700">
-                <CheckCircle size={14} />
-              </button>
-              <button onClick={() => { setIsAddingCategory(false); setCatName(''); }} className="w-8 h-8 bg-white text-slate-500 rounded-full flex items-center justify-center hover:bg-slate-50">
-                <X size={14} />
-              </button>
-            </div>
-          ) : (
-            <button 
-              onClick={() => setIsAddingCategory(true)}
-              className="px-6 py-2.5 rounded-full border-2 border-dashed border-slate-300 text-slate-500 font-black text-sm hover:border-slate-400 hover:text-slate-700 transition-colors flex items-center gap-2"
-            >
-              <Plus size={16} /> Add Category
-            </button>
-          )}
-       </div>
-
-       <div className="flex-1 overflow-y-auto p-10 custom-scrollbar">
-          {activeCategory ? (
-            <div className="max-w-6xl space-y-8">
-               <div className="flex items-center justify-between">
-                 <h3 className="text-xl font-black text-slate-800 tracking-tight">{activeCategory.name} Items</h3>
-                 {!isAddingItem && !editingItem && (
-                   <button 
-                     onClick={() => setIsAddingItem(true)}
-                     className="px-6 py-3 bg-blue-600 text-white font-black text-sm rounded-full hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-sm"
-                   >
-                     <Plus size={16} /> Add Item
-                   </button>
-                 )}
-               </div>
-
-               {(isAddingItem || editingItem) && (
-                 <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm grid grid-cols-2 gap-4 animate-in slide-in-from-top-4 duration-300">
-                   <div className="col-span-2 md:col-span-1 space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Item Name</label>
-                      <input type="text" value={itemName} onChange={e => setItemName(e.target.value)} placeholder="e.g. Latte" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-blue-400 font-bold text-sm" />
-                   </div>
-                   <div className="col-span-2 md:col-span-1 space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Price (EGP)</label>
-                      <input type="number" value={itemPrice} onChange={e => setItemPrice(Number(e.target.value))} placeholder="0" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-blue-400 font-bold text-sm" />
-                   </div>
-                   <div className="col-span-2 space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Image Upload (Optional)</label>
-                      <div className="relative">
-                         <div className="flex items-center gap-4">
-                           {itemImg && <img src={itemImg} alt="Preview" className="w-12 h-12 rounded-xl object-cover" />}
-                           <label className="flex-1 cursor-pointer">
-                             <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl hover:border-blue-400 transition-colors">
-                               <ImageIcon className="text-slate-400" size={16} />
-                               <span className="text-sm font-bold text-slate-600">{itemImg ? 'Change Image' : 'Click to select image file'}</span>
-                             </div>
-                             <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                           </label>
-                         </div>
-                      </div>
-                   </div>
-                   <div className="col-span-2 space-y-2">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Description</label>
-                      <textarea value={itemDesc} onChange={e => setItemDesc(e.target.value)} placeholder="Item description..." rows={2} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:border-blue-400 font-bold text-sm resize-none" />
-                   </div>
-                   <div className="col-span-2 flex gap-3 justify-end pt-2">
-                      <button onClick={() => { setEditingItem(null); setIsAddingItem(false); setItemName(''); setItemPrice(0); setItemDesc(''); setItemImg(''); }} className="px-6 py-3 bg-slate-100 text-slate-500 font-black text-sm rounded-2xl hover:bg-slate-200 transition-colors">Cancel</button>
-                      <button onClick={handleSaveItem} className="px-8 py-3 bg-slate-900 text-white font-black text-sm rounded-2xl hover:bg-slate-800 transition-colors flex items-center gap-2">
-                         {editingItem ? <Save size={16} /> : <Plus size={16} />}
-                         {editingItem ? 'Save Item' : 'Add Item'}
-                      </button>
-                   </div>
-                 </div>
-               )}
-
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                  {currentCategoryItems.map(item => (
-                    <div key={item.id} className="bg-white rounded-3xl p-5 border border-slate-200 flex flex-col group relative">
-                       <button 
-                         onClick={(e) => handleDeleteItem(item.id, e)}
-                         className="absolute top-2 right-2 z-10 w-8 h-8 bg-white/90 backdrop-blur text-rose-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-rose-500 hover:text-white"
-                       >
-                         <X size={14} />
-                       </button>
-                       <div className="aspect-[4/3] rounded-2xl overflow-hidden mb-4 relative bg-slate-100">
-                          {item.image ? (
-                            <img src={item.image} className="w-full h-full object-cover" />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-slate-300">
-                              <ImageIcon size={32} />
-                            </div>
-                          )}
-                       </div>
-                       <h4 className="font-black text-slate-900">{item.name}</h4>
-                       <p className="text-xs text-slate-400 font-medium mb-3 line-clamp-2 min-h-[2rem]">{item.description}</p>
-                       <div className="mt-auto flex items-center justify-between pt-3 border-t border-slate-100">
-                          <span className="font-black text-blue-600">{item.price} <span className="text-[10px]">EGP</span></span>
-                          <button onClick={() => { setEditingItem(item); setIsAddingItem(true); setItemName(item.name); setItemPrice(item.price); setItemDesc(item.description); setItemImg(item.image || ''); }} className="p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600 rounded-xl transition-colors">
-                             <Edit size={16} />
-                          </button>
-                       </div>
-                    </div>
-                  ))}
-                  {currentCategoryItems.length === 0 && !isAddingItem && !editingItem && (
-                    <div className="col-span-full py-10 flex flex-col items-center justify-center bg-white border border-slate-200 rounded-3xl border-dashed">
-                       <div className="w-12 h-12 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mb-3">
-                         <Coffee size={24} />
-                       </div>
-                       <p className="text-slate-500 font-bold mb-4">No items in this category yet.</p>
-                       <button onClick={() => setIsAddingItem(true)} className="px-6 py-2 bg-slate-900 text-white font-black text-sm rounded-full hover:bg-slate-800 transition-colors">
-                         Add First Item
-                       </button>
-                    </div>
-                  )}
-               </div>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400">
-              <p className="font-bold">Select or create a category to manage items.</p>
-            </div>
-          )}
-       </div>
-    </div>
-  );
-};
-
 export default MenuConfig;
+

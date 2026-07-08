@@ -1,10 +1,12 @@
 import { getAnalytics, isSupported, logEvent, setUserId, Analytics } from 'firebase/analytics';
 import { app } from './firebase';
+import { hasAnalyticsConsent } from '../utils/analyticsConsent';
 
 let analytics: Analytics | null = null;
 
 export async function initAnalytics(): Promise<Analytics | null> {
   if (typeof window === 'undefined') return null;
+  if (!hasAnalyticsConsent()) return null;
   if (analytics) return analytics;
   const supported = await isSupported();
   if (!supported) return null;

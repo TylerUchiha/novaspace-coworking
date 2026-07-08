@@ -1,8 +1,10 @@
 import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { logger } from 'firebase-functions/v2';
 import { db } from './db';
-import { notifyUser } from './notifications';
-import { queueEmail, recordAnalyticsEvent } from './transactionHelpers';
+import { recordAnalyticsEvent } from './transactionHelpers';
+import { sendUserEmailIfEnabled } from './emailNotifications';
+import { syncPublicAvailability } from './publicAvailability';
+import { shouldRefundCancellation } from './cancellationPolicy';
 
 const FIRESTORE_DATABASE_ID =
   'ai-studio-novaspacecoworki-863fc540-4213-48e8-8f94-f914c1f6fe77';
@@ -22,6 +24,8 @@ interface ReservationData {
   vendorId?: string;
   totalPrice?: number;
   paymentMethod?: string;
+  cancelledAt?: number;
+  cancelledBy?: string;
 }
 
 function reservationLabel(data: ReservationData): string {
@@ -29,29 +33,102 @@ function reservationLabel(data: ReservationData): string {
   return `booking on ${data.date} at ${data.time}`;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function emailShell(title: string, bodyLines: string[]): { html: string; text: string } {
+  const text = [title, '', ...bodyLines, '', '— NovaSpace'].join('\n');
+  const htmlBody = bodyLines.map((line) => `<p style="margin:0 0 12px;color:#475569;line-height:1.6;">${escapeHtml(line)}</p>`).join('');
+  const html = `
+    <div style="font-family:Inter,Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
+      <h2 style="color:#0f172a;margin:0 0 16px;font-size:22px;">${escapeHtml(title)}</h2>
+      ${htmlBody}
+      <p style="margin:24px 0 0;color:#94a3b8;font-size:13px;">NovaSpace · novaspace.work</p>
+    </div>
+  `;
+  return { html, text };
+}
+
+type ReservationEmailKind =
+  | 'order_placed'
+  | 'reservation_pending'
+  | 'reservation_approved'
+  | 'reservation_declined'
+  | 'order_ready';
+
+function createdEmailKind(data: ReservationData): ReservationEmailKind {
+  if (data.roomId === 'none') return 'order_placed';
+  if (data.status === 'pending') return 'reservation_pending';
+  return 'reservation_approved';
+}
+
 function buildStatusEmail(
   data: ReservationData,
-  kind: 'created' | 'approved' | 'declined' | 'order_ready',
+  kind: ReservationEmailKind,
 ): { subject: string; html: string; text: string } {
+  const name = data.userName || 'there';
   const label = reservationLabel(data);
-  const subjects: Record<typeof kind, string> = {
-    created: 'NovaSpace — booking received',
-    approved: 'NovaSpace — booking approved',
-    declined: 'NovaSpace — booking update',
-    order_ready: 'NovaSpace — your order is ready',
+  const detail =
+    data.roomId === 'none'
+      ? `Total: ${data.totalPrice ?? 0} credits`
+      : `${data.date} at ${data.time}${data.duration ? ` · ${data.duration}h` : ''}`;
+
+  const templates: Record<
+    ReservationEmailKind,
+    { subject: string; lines: string[] }
+  > = {
+    order_placed: {
+      subject: 'NovaSpace — order placed',
+      lines: [
+        `Hi ${name},`,
+        `Your order has been placed and is being prepared.`,
+        detail,
+        `We will email you when it is ready for pickup.`,
+      ],
+    },
+    reservation_pending: {
+      subject: 'NovaSpace — reservation pending',
+      lines: [
+        `Hi ${name},`,
+        `Your workspace reservation is pending approval.`,
+        detail,
+        `We will notify you as soon as it is confirmed.`,
+      ],
+    },
+    reservation_approved: {
+      subject: 'NovaSpace — reservation confirmed',
+      lines: [
+        `Hi ${name},`,
+        `Your ${label} has been confirmed.`,
+        detail,
+      ],
+    },
+    reservation_declined: {
+      subject: 'NovaSpace — reservation update',
+      lines: [
+        `Hi ${name},`,
+        `Your ${label} was declined or cancelled.`,
+        `Contact support if you need help rebooking.`,
+      ],
+    },
+    order_ready: {
+      subject: 'NovaSpace — your order is ready',
+      lines: [
+        `Hi ${name},`,
+        `Your order is ready for pickup.`,
+        `Please collect it at the service counter.`,
+      ],
+    },
   };
-  const bodies: Record<typeof kind, string> = {
-    created: `Hi ${data.userName || 'there'},\n\nWe received your ${label}. Status: ${data.status}.`,
-    approved: `Hi ${data.userName || 'there'},\n\nYour ${label} has been approved.`,
-    declined: `Hi ${data.userName || 'there'},\n\nYour ${label} was declined or cancelled.`,
-    order_ready: `Hi ${data.userName || 'there'},\n\nYour order is ready for pickup.`,
-  };
-  const text = bodies[kind];
-  return {
-    subject: subjects[kind],
-    html: `<p>${text.replace(/\n/g, '<br/>')}</p>`,
-    text,
-  };
+
+  const template = templates[kind];
+  const { html, text } = emailShell(template.subject.replace('NovaSpace — ', ''), template.lines);
+  return { subject: template.subject, html, text };
 }
 
 export const onReservationCreated = onDocumentCreated(
@@ -76,27 +153,12 @@ export const onReservationCreated = onDocumentCreated(
     });
 
     if (data.userEmail) {
-      const email = buildStatusEmail(data, 'created');
-      await queueEmail(data.userEmail, email.subject, email.html, email.text);
-    }
-
-    if (data.userId && data.status === 'approved') {
-      await notifyUser(
-        data.userId,
-        'Booking confirmed',
-        `Your ${reservationLabel(data)} is approved.`,
-        { reservationId, type: 'booking_approved' },
-      );
-    } else if (data.userId && data.status === 'pending') {
-      await notifyUser(
-        data.userId,
-        'Booking submitted',
-        `Your ${reservationLabel(data)} is pending approval.`,
-        { reservationId, type: 'booking_pending' },
-      );
+      const email = buildStatusEmail(data, createdEmailKind(data));
+      await sendUserEmailIfEnabled(data.userId, data.userEmail, email.subject, email.html, email.text);
     }
 
     logger.info('onReservationCreated', { reservationId, status: data.status });
+    await syncPublicAvailability(reservationId, data);
   },
 );
 
@@ -123,32 +185,22 @@ export const onReservationUpdated = onDocumentUpdated(
 
       if (after.status === 'approved') {
         if (after.userEmail) {
-          const email = buildStatusEmail(after, 'approved');
-          await queueEmail(after.userEmail, email.subject, email.html, email.text);
-        }
-        if (userId) {
-          await notifyUser(
-            userId,
-            'Booking approved',
-            `Your ${reservationLabel(after)} has been approved.`,
-            { reservationId, type: 'booking_approved' },
-          );
+          const email = buildStatusEmail(after, 'reservation_approved');
+          await sendUserEmailIfEnabled(userId, after.userEmail, email.subject, email.html, email.text);
         }
       } else if (after.status === 'declined') {
         if (after.userEmail) {
-          const email = buildStatusEmail(after, 'declined');
-          await queueEmail(after.userEmail, email.subject, email.html, email.text);
-        }
-        if (userId) {
-          await notifyUser(
-            userId,
-            'Booking update',
-            `Your ${reservationLabel(after)} was declined or cancelled.`,
-            { reservationId, type: 'booking_declined' },
-          );
+          const email = buildStatusEmail(after, 'reservation_declined');
+          await sendUserEmailIfEnabled(userId, after.userEmail, email.subject, email.html, email.text);
         }
 
-        if (after.paymentMethod === 'credits' && after.totalPrice && userId && before.status !== 'declined') {
+        if (
+          after.paymentMethod === 'credits' &&
+          after.totalPrice &&
+          userId &&
+          before.status !== 'declined' &&
+          shouldRefundCancellation(after, after.cancelledAt ?? Date.now())
+        ) {
           await refundCredits(userId, after.totalPrice, reservationId, after);
         }
       }
@@ -159,15 +211,7 @@ export const onReservationUpdated = onDocumentUpdated(
 
       if (after.userEmail) {
         const email = buildStatusEmail(after, 'order_ready');
-        await queueEmail(after.userEmail, email.subject, email.html, email.text);
-      }
-      if (userId) {
-        await notifyUser(
-          userId,
-          'Order ready',
-          'Your order is ready for pickup.',
-          { reservationId, type: 'order_ready' },
-        );
+        await sendUserEmailIfEnabled(userId, after.userEmail, email.subject, email.html, email.text);
       }
     }
 
@@ -176,6 +220,7 @@ export const onReservationUpdated = onDocumentUpdated(
       status: after.status,
       orderStatus: after.orderStatus,
     });
+    await syncPublicAvailability(reservationId, after);
   },
 );
 

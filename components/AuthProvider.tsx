@@ -11,6 +11,9 @@ import {
   signInWithEmailAndPassword,
   signInWithCustomToken,
   updateProfile,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+  updatePassword as firebaseUpdatePassword,
 } from 'firebase/auth';
 import { FirebaseError } from 'firebase/app';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -19,13 +22,15 @@ import { validateAccessCodeRemote } from '../services/cloudFunctions';
 import { setMonitoringUserId } from '../services/firebaseMonitoring';
 import { UserProfile } from '../types';
 import { trackSignUp, trackLogin, setAnalyticsUserId } from '../services/analytics';
-import { registerFcmToken, unregisterFcmToken } from '../services/fcm';
+import { unregisterFcmToken } from '../services/fcm';
 import {
   clearCodeSession,
   CodeSessionRole,
   loadCodeSession,
   saveCodeSession,
   saveStaffBranchSession,
+  saveStaffAccessCode,
+  loadStaffAccessCode,
   StoredStaffBranch,
 } from '../constants/auth';
 
@@ -39,6 +44,7 @@ interface SignUpDetails {
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
+  codeSessionRole: CodeSessionRole | null;
   loading: boolean;
   isAuthenticated: boolean;
   isCodeSession: boolean;
@@ -55,11 +61,13 @@ interface AuthContextType {
   enterStaffSession: (branch?: StoredStaffBranch) => Promise<void>;
   signOut: () => Promise<void>;
   updateUserProfile: (profile: UserProfile | ((prev: UserProfile | null) => UserProfile | null)) => Promise<void>;
+  updatePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   userProfile: null,
+  codeSessionRole: null,
   loading: true,
   isAuthenticated: false,
   isCodeSession: false,
@@ -75,6 +83,7 @@ const AuthContext = createContext<AuthContextType>({
   enterStaffSession: async () => {},
   signOut: async () => {},
   updateUserProfile: async () => {},
+  updatePassword: async () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -115,6 +124,8 @@ function mapAuthError(error: unknown): string {
         return 'An account already exists with this email.';
       case 'auth/weak-password':
         return 'Password must be at least 6 characters.';
+      case 'auth/requires-recent-login':
+        return 'Please sign out and sign in again before changing your password.';
       case 'auth/popup-closed-by-user':
         return 'Sign-in was cancelled.';
       case 'auth/unauthorized-domain': {
@@ -123,6 +134,11 @@ function mapAuthError(error: unknown): string {
       }
       case 'auth/operation-not-allowed':
         return 'This sign-in method is not enabled. Enable Email/Password or Google in Firebase Console → Authentication → Sign-in method.';
+      case 'functions/permission-denied':
+        return 'Invalid access code.';
+      case 'functions/unavailable':
+      case 'functions/deadline-exceeded':
+        return 'Could not reach the server. Check your connection and try again.';
       default:
         return error.message;
     }
@@ -150,6 +166,16 @@ function normalizePhone(phone?: string): string | undefined {
   if (!phone) return undefined;
   const digits = phone.replace(/\D/g, '');
   return digits || undefined;
+}
+
+function isCodeAuthUid(uid: string): boolean {
+  return uid.startsWith('code-');
+}
+
+function resolveStaffRoleFromUid(uid: string): CodeSessionRole | null {
+  if (uid.includes('owner')) return 'owner';
+  if (uid.includes('staff')) return 'employee';
+  return null;
 }
 
 function buildStaffProfile(firebaseUser: User, role: CodeSessionRole): UserProfile {
@@ -236,6 +262,7 @@ function buildUserProfile(firebaseUser: User, extras?: Partial<UserProfile>): Us
     paymentMethods: extras?.paymentMethods ?? [],
     profession: extras?.profession,
     createdAt: extras?.createdAt ?? Date.now(),
+    emailNotificationsEnabled: extras?.emailNotificationsEnabled ?? true,
   }) as UserProfile;
 }
 
@@ -274,10 +301,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     setCodeSessionRole(role);
 
+    if (auth.currentUser && !isCodeAuthUid(auth.currentUser.uid)) {
+      await firebaseSignOut(auth);
+    }
+
     if (customToken) {
-      if (auth.currentUser && !auth.currentUser.uid.startsWith('code-')) {
-        await firebaseSignOut(auth);
-      }
       const credential = await signInWithCustomToken(auth, customToken);
       const profile = buildStaffProfile(credential.user, role);
       await setDoc(doc(db, 'users', credential.user.uid), stripUndefined(profile as unknown as Record<string, unknown>), { merge: true });
@@ -291,32 +319,59 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [clearAuthError]);
 
   const signInWithAccessCode = useCallback(async (code: string): Promise<boolean> => {
+    clearAuthError();
+
     try {
       const result = await validateAccessCodeRemote(code);
+      if (auth.currentUser && !isCodeAuthUid(auth.currentUser.uid)) {
+        await firebaseSignOut(auth);
+      }
+      saveStaffAccessCode(code);
       if (result.customToken) {
         await startCodeSession(result.role, result.branch, result.customToken);
         return true;
       }
       await startCodeSession(result.role, result.branch);
       return true;
-    } catch {
+    } catch (error) {
+      clearCodeAuth();
+      setAuthError(mapAuthError(error));
+      console.error('Access code sign-in failed', error);
       return false;
     }
-  }, [startCodeSession]);
+  }, [clearAuthError, clearCodeAuth, startCodeSession]);
 
   const ensureUserProfile = useCallback(async (
     firebaseUser: User,
     extras?: Partial<UserProfile>
   ): Promise<UserProfile> => {
+    const storedSession = loadCodeSession();
+    if (storedSession?.role === 'owner' || storedSession?.role === 'employee') {
+      const profile = buildCodeSessionProfile(storedSession.role);
+      setUserProfile(profile);
+      setCodeSessionRole(storedSession.role);
+      return profile;
+    }
+
+    if (isCodeAuthUid(firebaseUser.uid)) {
+      const role = resolveStaffRoleFromUid(firebaseUser.uid) ?? 'employee';
+      const profile = buildStaffProfile(firebaseUser, role);
+      setUserProfile(profile);
+      setCodeSessionRole(role);
+      saveCodeSession(role);
+      return profile;
+    }
+
     const docRef = doc(db, 'users', firebaseUser.uid);
 
     try {
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
         const rawVerified = docSnap.data()?.emailVerified;
+        const firestoreRole = docSnap.data()?.role;
         const existing = {
           ...(docSnap.data() as UserProfile),
-          role: 'customer' as const,
+          role: (firestoreRole === 'owner' || firestoreRole === 'employee' ? firestoreRole : 'customer') as UserProfile['role'],
           emailVerified: rawVerified === true,
         };
         const merged = mergeSignupExtras(existing, extras);
@@ -399,9 +454,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         unsubscribeProfile = undefined;
       }
 
+      const storedSession = loadCodeSession();
+
       if (currentUser) {
-        const token = await currentUser.getIdTokenResult();
-        const claimRole = token.claims.role as string | undefined;
+        const token = await currentUser.getIdTokenResult(true);
+        let claimRole = token.claims.role as string | undefined;
+        if (!claimRole && isCodeAuthUid(currentUser.uid)) {
+          claimRole = storedSession?.role ?? resolveStaffRoleFromUid(currentUser.uid) ?? undefined;
+        }
 
         if (claimRole === 'owner' || claimRole === 'employee') {
           const role = claimRole as CodeSessionRole;
@@ -410,18 +470,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const profile = buildStaffProfile(currentUser, role);
           setUserProfile(profile);
           setProfileSyncError(null);
-          void registerFcmToken(currentUser.uid);
+        } else if (storedSession?.role === 'owner' || storedSession?.role === 'employee') {
+          setCodeSessionRole(storedSession.role);
+          setUserProfile(buildCodeSessionProfile(storedSession.role));
+          setProfileSyncError(null);
+          if (!isCodeAuthUid(currentUser.uid)) {
+            await firebaseSignOut(auth);
+            setUser(null);
+          }
         } else {
           clearCodeSession();
           setCodeSessionRole(null);
           await ensureUserProfile(currentUser);
           void setAnalyticsUserId(currentUser.uid);
-          void registerFcmToken(currentUser.uid);
 
           const docRef = doc(db, 'users', currentUser.uid);
           unsubscribeProfile = onSnapshot(
             docRef,
             (docSnap) => {
+              if (loadCodeSession()) return;
               if (docSnap.exists()) {
                 const data = docSnap.data() as UserProfile;
                 setUserProfile({
@@ -439,7 +506,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           );
         }
-      } else if (!loadCodeSession()) {
+      } else if (storedSession) {
+        setCodeSessionRole(storedSession.role);
+        setUserProfile(buildCodeSessionProfile(storedSession.role));
+        setProfileSyncError(null);
+      } else {
         setUserProfile(null);
         setCodeSessionRole(null);
         setProfileSyncError(null);
@@ -454,6 +525,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (unsubscribeProfile) unsubscribeProfile();
     };
   }, [clearCodeAuth, ensureUserProfile]);
+
+  useEffect(() => {
+    if (loading || user || !codeSessionRole) return;
+    const code = loadStaffAccessCode();
+    if (!code) return;
+
+    void (async () => {
+      try {
+        const result = await validateAccessCodeRemote(code);
+        if (result.customToken) {
+          await signInWithCustomToken(auth, result.customToken);
+        }
+      } catch (error) {
+        console.warn('Staff Firebase session restore failed', error);
+      }
+    })();
+  }, [loading, user, codeSessionRole]);
 
   const signInWithGoogle = async () => {
     clearAuthError();
@@ -544,8 +632,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await unregisterFcmToken();
     void setAnalyticsUserId(null);
     clearCodeAuth();
+    setUserProfile(null);
+    setCodeSessionRole(null);
     if (auth.currentUser) {
       await firebaseSignOut(auth);
+    }
+  };
+
+  const updatePassword = async (currentPassword: string, newPassword: string) => {
+    const currentUser = auth.currentUser;
+    if (!currentUser?.email) {
+      throw new Error('Sign in with an email and password account to change your password.');
+    }
+
+    try {
+      const credential = EmailAuthProvider.credential(currentUser.email, currentPassword);
+      await reauthenticateWithCredential(currentUser, credential);
+      await firebaseUpdatePassword(currentUser, newPassword);
+    } catch (error) {
+      throw new Error(mapAuthError(error));
     }
   };
 
@@ -556,6 +661,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         userProfile,
+        codeSessionRole,
         loading,
         isAuthenticated,
         isCodeSession: !!codeSessionRole,
@@ -571,6 +677,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         enterStaffSession,
         signOut,
         updateUserProfile,
+        updatePassword,
       }}
     >
       {!loading && children}

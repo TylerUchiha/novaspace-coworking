@@ -1,15 +1,15 @@
 
-import React, { useState, useMemo, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Room, RoomStatus, Reservation, UserProfile, Vendor, Floor, LocationData, Employee } from './types';
-import { LOCATIONS, ROOM_COLORS, INITIAL_RESERVATIONS, VENDORS } from './constants';
-import ShiftTimerWidget from './components/ShiftTimerWidget';
-import { Building2, Map as MapIcon, MapPin, LogOut, ShieldCheck, Settings, Eye, X, Plus, Search, User, Check, Mail, ChevronLeft, Globe, Calendar, Wallet, Coins, Utensils, ShoppingCart, BarChart3, AlertCircle, Clock, KeyRound, Ban, Star } from 'lucide-react';
+import { Room, RoomStatus, Reservation, UserProfile, Vendor, Floor, LocationData, Employee, CreditTransaction } from './types';
+import { LOCATIONS, ROOM_COLORS, VENDORS } from './constants';
+import { Building2, Map as MapIcon, MapPin, LogOut, ShieldCheck, Settings, Eye, X, Plus, User, Check, Mail, ChevronLeft, Globe, Calendar, Wallet, Coins, Utensils, ShoppingCart, BarChart3, AlertCircle, Clock, KeyRound, Ban, Star } from 'lucide-react';
 
 import { useAuth } from './components/AuthProvider';
 import { useRemoteConfig } from './components/RemoteConfigProvider';
-import { loadStaffBranchSession } from './constants/auth';
-import { createBookingRemote, cancelBookingRemote, updateReservationStatusRemote, topUpCreditsRemote } from './services/cloudFunctions';
+import { loadStaffBranchSession, loadStaffAccessCode } from './constants/auth';
+import { createBookingRemote, cancelBookingRemote, updateReservationStatusRemote, appendReservationOrderRemote, syncReservationUserNameRemote, getStaffAccessCodeRemote, topUpCreditsRemote } from './services/cloudFunctions';
 import {
   ensureCatalogSeeded,
   subscribeVendors,
@@ -17,14 +17,24 @@ import {
   saveVendor,
   saveLocation,
 } from './services/firestoreCatalog';
-import { subscribeAllReservations } from './services/firestoreReservations';
+import { subscribeUserReservations, subscribeStaffReservationsByVendor, subscribeReservationsByLocationAndDate, mergeReservationLists } from './services/firestoreReservations';
 import { subscribeAllUsers } from './services/firestoreUsers';
 import { subscribeEmployees, saveEmployee, deleteEmployee } from './services/firestoreEmployees';
 import { subscribeUserTransactions } from './services/firestoreTransactions';
 import { trackBookingCreated, trackTopUpAttempt, trackTopUpSuccess, trackFeatureUsed } from './services/analytics';
-import { CreditTransaction } from './types';
-import { normalizePhoneDigits } from './services/phoneVerification';
+import { mergeMenuCatalog, buildMenuItemLookup } from './utils/menuCatalog';
+import {
+  AppTab,
+  buildNetworkPath,
+  buildVendorPath,
+  defaultTabForRole,
+  isStaticPagePath,
+  isValidTabForRole,
+  parseNetworkPath,
+} from './utils/appRoutes';
+import { isContactVerified, contactVerificationMessage, isEmailVerified, isPhoneVerified } from './utils/verification';
 
+const ShiftTimerWidget = lazy(() => import('./components/ShiftTimerWidget'));
 const RoomDetail = lazy(() => import('./components/RoomDetail'));
 const LandingPage = lazy(() => import('./components/LandingPage'));
 const VendorSelection = lazy(() => import('./components/VendorSelection'));
@@ -34,6 +44,7 @@ const PropertyConfig = lazy(() => import('./components/PropertyConfig'));
 const ProfilePage = lazy(() => import('./components/ProfilePage'));
 const CreateSpacePage = lazy(() => import('./components/CreateSpacePage'));
 const MyBookingsPage = lazy(() => import('./components/MyBookingsPage'));
+const FavoritesPage = lazy(() => import('./components/FavoritesPage'));
 const MenuConfig = lazy(() => import('./components/MenuConfig'));
 const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'));
 const ShiftRegistryDashboard = lazy(() => import('./components/ShiftRegistryDashboard'));
@@ -56,7 +67,9 @@ const timeToMinutes = (timeStr: string): number => {
 };
 
 const App: React.FC = () => {
-  const { user, userProfile, loading, isAuthenticated, enterStaffSession, signInWithAccessCode, signOut, updateUserProfile, profileSyncError } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, userProfile, codeSessionRole, loading, isAuthenticated, signInWithAccessCode, signOut, updateUserProfile, profileSyncError } = useAuth();
   const {
     minTopUpAmount,
     featureCreditsTopUpEnabled,
@@ -64,28 +77,110 @@ const App: React.FC = () => {
   } = useRemoteConfig();
   const setUserProfile = updateUserProfile;
   const isLoggedIn = isAuthenticated;
-  const userRole = (userProfile?.role as 'customer' | 'employee' | 'owner') || null;
+  const userRole = (codeSessionRole ?? (userProfile?.role as 'customer' | 'employee' | 'owner' | undefined)) || null;
   const isStaff = userRole === 'employee' || userRole === 'owner';
   const [allVendors, setAllVendors] = useState<Vendor[]>(VENDORS);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
   const [isLocationConfirmed, setIsLocationConfirmed] = useState(false);
-  const [favoritedRooms, setFavoritedRooms] = useState<string[]>([]);
+  const favoritedRooms = userProfile?.favoritedRoomIds ?? [];
   
   // New: Sub-tab state for configuration
   const [configView, setConfigView] = useState<'layout' | 'brand' | 'branch' | 'tags'>('layout');
-  const [postLoginAction, setPostLoginAction] = useState<'select_network' | 'edit_profile' | 'create_space' | 'privacy' | 'terms' | 'support' | 'api_status' | null>(null);
 
-  const [clockedInEmployeeIds, setClockedInEmployeeIds] = useState<string[]>([]);
+  const parsedNetwork = useMemo(() => parseNetworkPath(location.pathname), [location.pathname]);
+  const isCustomerVerified = isContactVerified(userProfile, user);
+  const verificationBlockMessage = contactVerificationMessage(userProfile, user);
 
   const [isShiftActive, setIsShiftActive] = useState(false);
 
   const [allEmployees, setAllEmployees] = useState<Employee[]>([]);
 
+  const clockedInEmployeeIds = useMemo(
+    () => allEmployees.filter((e) => e.shifts.some((s) => s.endTime === null)).map((e) => e.id),
+    [allEmployees],
+  );
+
+  const shiftSessionKey = useMemo(() => {
+    if (userRole !== 'employee') return null;
+    const branch = loadStaffBranchSession();
+    return branch ? `novaspace-shift-${branch.locationId}-${user?.uid ?? 'code'}` : null;
+  }, [userRole, user?.uid]);
+
+  useEffect(() => {
+    if (!shiftSessionKey) return;
+    setIsShiftActive(sessionStorage.getItem(shiftSessionKey) === '1');
+  }, [shiftSessionKey]);
+
+  const setShiftActive = useCallback(
+    (active: boolean) => {
+      setIsShiftActive(active);
+      if (!shiftSessionKey) return;
+      if (active) sessionStorage.setItem(shiftSessionKey, '1');
+      else sessionStorage.removeItem(shiftSessionKey);
+    },
+    [shiftSessionKey],
+  );
+
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
 
   const [allLocations, setAllLocations] = useState<LocationData[]>(LOCATIONS);
-  const [allReservations, setAllReservations] = useState<Reservation[]>(INITIAL_RESERVATIONS);
+  const [allReservations, setAllReservations] = useState<Reservation[]>([]);
+  const pendingLocationsRef = useRef<Map<string, LocationData>>(new Map());
+  const editingStaffCodeLocRef = useRef<string | null>(null);
+  const staffCodeSaveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const staffCodeDirtyRef = useRef<Set<string>>(new Set());
+  const bookingInProgressRef = useRef(false);
+
+  const mergeLocationsFromRemote = useCallback((remote: LocationData[], prev: LocationData[]) => {
+    const prevById = new Map(prev.map((loc) => [loc.id, loc]));
+    const byId = new Map(
+      remote.map((loc) => {
+        const code = prevById.get(loc.id)?.staffAccessCode;
+        return [loc.id, code ? { ...loc, staffAccessCode: code } : loc];
+      }),
+    );
+    for (const [id, pendingLoc] of pendingLocationsRef.current) {
+      if (byId.has(id)) {
+        pendingLocationsRef.current.delete(id);
+      } else {
+        const local = prev.find((loc) => loc.id === id);
+        const merged = local ?? pendingLoc;
+        byId.set(id, merged);
+        pendingLocationsRef.current.set(id, merged);
+      }
+    }
+    return Array.from(byId.values());
+  }, []);
+
+  const syncPendingLocations = useCallback(async () => {
+    if (!isStaff) return;
+    for (const loc of pendingLocationsRef.current.values()) {
+      try {
+        await saveLocation(loc);
+      } catch (error) {
+        console.error('Failed to sync pending branch', loc.id, error);
+      }
+    }
+  }, [isStaff]);
+
+  const reportCatalogSyncError = useCallback((error: unknown) => {
+    console.error('Catalog sync failed', error);
+    const message =
+      error instanceof Error && error.message.includes('Staff Firebase authentication')
+        ? 'Could not sync changes. Log out and sign in again with your Global Access code.'
+        : 'Changes saved locally but could not sync yet. They will retry automatically.';
+    setBookingError(message);
+    setTimeout(() => setBookingError(null), 6000);
+  }, []);
+
+  const persistLocation = useCallback(
+    (location: LocationData) => {
+      if (!isStaff || !user) return;
+      void saveLocation(location).catch(reportCatalogSyncError);
+    },
+    [isStaff, user, reportCatalogSyncError],
+  );
 
   useEffect(() => {
     let unsubVendors: (() => void) | undefined;
@@ -98,7 +193,8 @@ const App: React.FC = () => {
         setCatalogLoading(false);
       });
       unsubLocations = subscribeLocations((locations) => {
-        if (locations.length > 0) setAllLocations(locations);
+        if (locations.length === 0) return;
+        setAllLocations((prev) => mergeLocationsFromRemote(locations, prev));
       });
     })();
 
@@ -106,12 +202,12 @@ const App: React.FC = () => {
       unsubVendors?.();
       unsubLocations?.();
     };
-  }, []);
+  }, [mergeLocationsFromRemote]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
-    return subscribeAllReservations(setAllReservations);
-  }, [isAuthenticated]);
+    if (!isStaff) return;
+    void syncPendingLocations();
+  }, [isStaff, user, syncPendingLocations]);
 
   useEffect(() => {
     if (!isStaff || !user) return;
@@ -185,12 +281,13 @@ const App: React.FC = () => {
     }
   }, [vendorLocations, currentLocationId]);
 
-  const [activeTab, setActiveTab] = useState<'blueprint' | 'staff_registry' | 'property_config' | 'menu_config' | 'analytics' | 'profile' | 'my_bookings' | 'credits' | 'staff_management' | 'cancellation_policies'>('blueprint');
+  const [activeTab, setActiveTab] = useState<AppTab>(defaultTabForRole(userRole));
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [timeInput, setTimeInput] = useState("09:00");
   const [timePeriod, setTimePeriod] = useState<"AM" | "PM">("AM");
   const [bookingDuration, setBookingDuration] = useState(0);
   const [bookingError, setBookingError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [basket, setBasket] = useState<Record<string, number>>({});
   const [basketComments, setBasketComments] = useState<Record<string, string>>({});
   const [basketDeliveryTimes, setBasketDeliveryTimes] = useState<Record<string, string>>({});
@@ -198,8 +295,130 @@ const App: React.FC = () => {
   const [isServiceMenuOpen, setIsServiceMenuOpen] = useState(false);
   const [isReviewMenuOpen, setIsReviewMenuOpen] = useState(false);
   const [showAccessCodeModal, setShowAccessCodeModal] = useState(false);
+  const openAccessCodeModal = useCallback(() => setShowAccessCodeModal(true), []);
+  const [staffCodeDraft, setStaffCodeDraft] = useState('');
+
+  const vendorLocationIdsKey = useMemo(() => {
+    if (!selectedVendor?.id) return '';
+    return allLocations
+      .filter((loc) => loc.vendorId === selectedVendor.id)
+      .map((loc) => loc.id)
+      .sort()
+      .join(',');
+  }, [selectedVendor?.id, allLocations.map((loc) => loc.id).sort().join(',')]);
+
+  const staffCodeFetchScopeKey = useMemo(() => {
+    if (!isStaff || !user) return null;
+    if (showAccessCodeModal && currentLocationId) return `modal:${currentLocationId}`;
+    if (userRole === 'owner' && activeTab === 'property_config' && vendorLocationIdsKey) {
+      return `config:${vendorLocationIdsKey}`;
+    }
+    return null;
+  }, [isStaff, user, showAccessCodeModal, userRole, activeTab, currentLocationId, vendorLocationIdsKey]);
+
+  useEffect(() => {
+    if (!showAccessCodeModal || !currentLocationId) return;
+    const loc = allLocations.find((l) => l.id === currentLocationId);
+    setStaffCodeDraft(loc?.staffAccessCode || '');
+    editingStaffCodeLocRef.current = null;
+  }, [showAccessCodeModal, currentLocationId]);
+
+  const resolvedBranchCode = useMemo(() => {
+    const fromState = currentLocation?.staffAccessCode?.trim() || '';
+    if (fromState) return fromState;
+    if (userRole === 'employee') return loadStaffAccessCode()?.trim() || '';
+    return '';
+  }, [currentLocation?.staffAccessCode, currentLocation?.id, userRole, showAccessCodeModal]);
+
   const [activeServiceCategory, setActiveServiceCategory] = useState<string | null>(null);
   const [menuSource, setMenuSource] = useState<{ type: 'global' | 'branch' | 'room', id?: string }>({ type: 'global' });
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setAllReservations([]);
+      return;
+    }
+
+    const buckets = new Map<string, Reservation[]>();
+    const unsubs: (() => void)[] = [];
+
+    const publish = () => {
+      setAllReservations(mergeReservationLists(...buckets.values()));
+    };
+
+    if (isStaff && selectedVendor?.id) {
+      unsubs.push(
+        subscribeStaffReservationsByVendor(selectedVendor.id, (reservations) => {
+          buckets.set('vendor', reservations);
+          publish();
+        }),
+      );
+    } else if (user?.uid && userRole === 'customer') {
+      unsubs.push(
+        subscribeUserReservations(user.uid, (reservations) => {
+          buckets.set('user', reservations);
+          publish();
+        }),
+      );
+
+      if (currentLocationId && selectedDate) {
+        unsubs.push(
+          subscribeReservationsByLocationAndDate(currentLocationId, selectedDate, (reservations) => {
+            buckets.set('locationDate', reservations);
+            publish();
+          }),
+        );
+      }
+    }
+
+    return () => unsubs.forEach((unsub) => unsub());
+  }, [
+    isAuthenticated,
+    isStaff,
+    user?.uid,
+    userRole,
+    selectedVendor?.id,
+    currentLocationId,
+    selectedDate,
+  ]);
+
+  useEffect(() => {
+    if (!staffCodeFetchScopeKey) return;
+
+    const locationIds = staffCodeFetchScopeKey.startsWith('modal:')
+      ? [staffCodeFetchScopeKey.slice('modal:'.length)].filter(Boolean)
+      : staffCodeFetchScopeKey.startsWith('config:')
+        ? staffCodeFetchScopeKey.slice('config:'.length).split(',').filter(Boolean)
+        : [];
+
+    if (locationIds.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const locId of locationIds) {
+        if (editingStaffCodeLocRef.current === locId) continue;
+        try {
+          const { code } = await getStaffAccessCodeRemote(locId);
+          if (cancelled || !code) continue;
+          setAllLocations((prev) => {
+            const localCode = prev.find((e) => e.id === locId)?.staffAccessCode ?? '';
+            if (staffCodeDirtyRef.current.has(locId)) return prev;
+            if (editingStaffCodeLocRef.current === locId) return prev;
+            if (localCode === code) return prev;
+            return prev.map((entry) =>
+              entry.id === locId ? { ...entry, staffAccessCode: code } : entry,
+            );
+          });
+        } catch (error) {
+          console.warn('Failed to load staff access code for', locId, error);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [staffCodeFetchScopeKey]);
 
   useEffect(() => {
     setBasket({});
@@ -213,6 +432,57 @@ const App: React.FC = () => {
     else if (userRole === 'owner') setActiveTab('property_config');
     else setActiveTab('blueprint');
   }, [userRole]);
+
+  const goToTab = useCallback((tab: AppTab) => {
+    setActiveTab(tab);
+    if (selectedVendor && currentLocationId && isLocationConfirmed) {
+      navigate(buildNetworkPath(selectedVendor.id, currentLocationId, tab));
+    }
+  }, [navigate, selectedVendor, currentLocationId, isLocationConfirmed]);
+
+  useEffect(() => {
+    if (!parsedNetwork?.vendorId || allVendors.length === 0) return;
+    const vendor = allVendors.find((v) => v.id === parsedNetwork.vendorId);
+    if (vendor && selectedVendor?.id !== vendor.id) {
+      setSelectedVendor(vendor);
+    }
+    if (parsedNetwork.locationId && allLocations.length > 0) {
+      const loc = allLocations.find((l) => l.id === parsedNetwork.locationId);
+      if (loc) {
+        setCurrentLocationId(loc.id);
+        setIsLocationConfirmed(true);
+        if (!currentFloorId || !loc.floors.some((f) => f.id === currentFloorId)) {
+          setCurrentFloorId(loc.floors[0]?.id || '');
+        }
+      }
+    }
+    if (parsedNetwork.tab && isValidTabForRole(parsedNetwork.tab, userRole)) {
+      setActiveTab(parsedNetwork.tab);
+    }
+  }, [parsedNetwork, allVendors, allLocations, userRole, selectedVendor?.id, currentFloorId]);
+
+  useEffect(() => {
+    if (loading || !isAuthenticated) return;
+    if (location.pathname === '/' || location.pathname === '/login') {
+      if (isStaff) {
+        const branch = loadStaffBranchSession();
+        if (branch) {
+          navigate(buildNetworkPath(branch.vendorId, branch.locationId, defaultTabForRole(userRole)), { replace: true });
+        } else {
+          navigate('/network', { replace: true });
+        }
+      } else {
+        navigate('/menu', { replace: true });
+      }
+    }
+  }, [loading, isAuthenticated, isStaff, userRole, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (loading || isAuthenticated || isStaticPagePath(location.pathname)) return;
+    if (location.pathname !== '/login') {
+      navigate('/login', { replace: true });
+    }
+  }, [loading, isAuthenticated, location.pathname, navigate]);
 
   useEffect(() => {
     if (activeTab === 'analytics') void trackFeatureUsed('analytics_dashboard');
@@ -239,7 +509,8 @@ const App: React.FC = () => {
     setCurrentLocationId(branch.locationId);
     setCurrentFloorId(branch.floorId || loc.floors[0]?.id || '');
     setIsLocationConfirmed(true);
-  }, [isAuthenticated, userRole, selectedVendor, allVendors, allLocations]);
+    navigate(buildNetworkPath(vendor.id, loc.id, defaultTabForRole(userRole)), { replace: true });
+  }, [isAuthenticated, userRole, selectedVendor, allVendors, allLocations, navigate]);
 
   const selectedTime24h = useMemo(() => {
     const parts = timeInput.split(':');
@@ -354,8 +625,16 @@ const App: React.FC = () => {
     selectedMenuItems?: { itemId: string; quantity: number; comment?: string }[],
     totalPriceOverride?: number,
     totalOrderComment?: string,
-  ) => {
-    if (!selectedVendor || !userProfile) return;
+  ): Promise<boolean> => {
+    if (!selectedVendor || !userProfile) return false;
+    if (!targetUser && !isStaff && !isCustomerVerified) {
+      setBookingError(verificationBlockMessage || 'Verify your contact information before booking.');
+      setTimeout(() => setBookingError(null), 5000);
+      return false;
+    }
+    if (bookingInProgressRef.current) return false;
+    bookingInProgressRef.current = true;
+
     const finalUser = targetUser || userProfile;
 
     const totalPrice =
@@ -366,7 +645,8 @@ const App: React.FC = () => {
     if (paymentMethod === 'credits' && !targetUser && userProfile.credits < totalPrice) {
       setBookingError('Insufficient credits');
       setTimeout(() => setBookingError(null), 3000);
-      return;
+      bookingInProgressRef.current = false;
+      return false;
     }
 
     const menuPayload = selectedMenuItems?.map((item) => ({
@@ -405,10 +685,15 @@ const App: React.FC = () => {
       setSelectedRoomIds([]);
       setShowBookingSuccess(true);
       setTimeout(() => setShowBookingSuccess(false), 3000);
+
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Booking failed.';
       setBookingError(message.includes('Conflict') ? message : 'Could not complete booking. Try again.');
       setTimeout(() => setBookingError(null), 5000);
+      return false;
+    } finally {
+      bookingInProgressRef.current = false;
     }
   };
 
@@ -416,7 +701,7 @@ const App: React.FC = () => {
     setAllVendors((prev) => {
       const next = prev.map((v) => (v.id === vendorId ? { ...v, ...updates } : v));
       const updated = next.find((v) => v.id === vendorId);
-      if (updated && isStaff) void saveVendor(updated);
+      if (updated && isStaff) void saveVendor(updated).catch(reportCatalogSyncError);
       return next;
     });
     if (selectedVendor?.id === vendorId) {
@@ -426,20 +711,47 @@ const App: React.FC = () => {
 
   const handleUpdateLocationMeta = (locId: string, updates: Partial<LocationData> | ((prev: LocationData) => Partial<LocationData>)) => {
     setAllLocations((prev) => {
+      const prevLoc = prev.find((l) => l.id === locId);
       const next = prev.map((l) => {
         if (l.id === locId) {
           const actualUpdates = typeof updates === 'function' ? updates(l) : updates;
+          if ('staffAccessCode' in actualUpdates) {
+            staffCodeDirtyRef.current.add(locId);
+          }
           return { ...l, ...actualUpdates };
         }
         return l;
       });
       const updated = next.find((l) => l.id === locId);
-      if (updated && isStaff) void saveLocation(updated);
+      if (updated && pendingLocationsRef.current.has(locId)) {
+        pendingLocationsRef.current.set(locId, updated);
+      }
+      if (updated) {
+        const staffCodeChanged =
+          (prevLoc?.staffAccessCode ?? '') !== (updated.staffAccessCode ?? '');
+        if (staffCodeChanged) {
+          const existing = staffCodeSaveTimersRef.current.get(locId);
+          if (existing) clearTimeout(existing);
+          staffCodeSaveTimersRef.current.set(
+            locId,
+            setTimeout(() => {
+              staffCodeSaveTimersRef.current.delete(locId);
+              setAllLocations((current) => {
+                const loc = current.find((l) => l.id === locId);
+                if (loc) persistLocation(loc);
+                return current;
+              });
+            }, 600),
+          );
+        } else {
+          persistLocation(updated);
+        }
+      }
       return next;
     });
   };
 
-  const handleAddLocation = () => {
+  const handleAddLocation = async () => {
     if (!selectedVendor) return;
     const newId = `loc-${Date.now()}`;
     const catId = `cat-new-loc-${Date.now()}`;
@@ -468,31 +780,30 @@ const App: React.FC = () => {
         }
       ]
     };
-    setAllLocations((prev) => {
-      const next = [...prev, newLoc];
-      if (isStaff) void saveLocation(newLoc);
-      return next;
-    });
+
+    pendingLocationsRef.current.set(newId, newLoc);
+    setAllLocations((prev) => [...prev, newLoc]);
     setCurrentLocationId(newId);
     setCurrentFloorId(newLoc.floors[0].id);
+
+    if (!isStaff) return;
+
+    try {
+      await saveLocation(newLoc);
+    } catch (error) {
+      console.error('Failed to save new branch', error);
+      const message =
+        error instanceof Error && error.message.includes('Staff Firebase authentication')
+          ? 'Could not sync branch. Log out and sign in again with your Global Access code.'
+          : 'Branch added locally but could not sync yet. It will retry automatically.';
+      setBookingError(message);
+      setTimeout(() => setBookingError(null), 6000);
+    }
   };
 
   const handleCodeLogin = async (code: string) => {
     const success = await signInWithAccessCode(code);
-    if (!success) {
-      const normalizedCode = code.trim().toUpperCase();
-      const loc = allLocations.find((l) => l.staffAccessCode?.toUpperCase() === normalizedCode);
-      if (!loc) return false;
-      const vendor = allVendors.find((v) => v.id === loc.vendorId);
-      if (!vendor) return false;
-      const floorId = loc.floors[0]?.id || '';
-      setSelectedVendor(vendor);
-      setCurrentLocationId(loc.id);
-      setCurrentFloorId(floorId);
-      setIsLocationConfirmed(true);
-      await enterStaffSession({ vendorId: vendor.id, locationId: loc.id, floorId });
-      return true;
-    }
+    if (!success) return false;
 
     const branch = loadStaffBranchSession();
     if (branch) {
@@ -500,15 +811,26 @@ const App: React.FC = () => {
       const loc = allLocations.find((l) => l.id === branch.locationId);
       if (vendor && loc) {
         setSelectedVendor(vendor);
-        setCurrentLocationId(loc.id);
+        setCurrentLocationId(branch.locationId);
         setCurrentFloorId(branch.floorId || loc.floors[0]?.id || '');
         setIsLocationConfirmed(true);
+        navigate(buildNetworkPath(vendor.id, loc.id, defaultTabForRole(userRole)), { replace: true });
       }
     }
-    return success;
+    return true;
   };
 
-  const handleLogout = async () => { await signOut(); setSelectedVendor(null); setIsLocationConfirmed(false); setSelectedRoomIds([]); setPostLoginAction(null); setBasket({}); setBasketComments({}); setBasketDeliveryTimes({}); setTotalOrderComment(""); };
+  const handleLogout = async () => {
+    await signOut();
+    setSelectedVendor(null);
+    setIsLocationConfirmed(false);
+    setSelectedRoomIds([]);
+    setBasket({});
+    setBasketComments({});
+    setBasketDeliveryTimes({});
+    setTotalOrderComment("");
+    navigate('/login');
+  };
 
   const [isTopUpOpen, setIsTopUpOpen] = useState(false);
   const [isTransactionsOpen, setIsTransactionsOpen] = useState(false);
@@ -521,7 +843,9 @@ const App: React.FC = () => {
   }, [minTopUpAmount]);
 
   const effectiveCancellationPolicy =
-    selectedVendor?.cancellationPolicy?.trim() || defaultCancellationPolicyText;
+    currentLocation?.cancellationPolicy?.trim() ||
+    selectedVendor?.cancellationPolicy?.trim() ||
+    defaultCancellationPolicyText;
 
   const topUpPresets = useMemo(() => {
     const presets = [minTopUpAmount, 500, 1000].filter((v, i, arr) => arr.indexOf(v) === i);
@@ -554,67 +878,81 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateProfile = (newProfile: UserProfile) => {
-    if (newProfile.name !== userProfile.name) {
-      setAllReservations(prev => prev.map(r => r.userName === userProfile.name ? { ...r, userName: newProfile.name } : r));
+  const handleUpdateProfile = async (newProfile: UserProfile) => {
+    if (userProfile && newProfile.name !== userProfile.name && newProfile.uid) {
+      try {
+        await syncReservationUserNameRemote(newProfile.name, newProfile.uid);
+      } catch (err) {
+        console.error('Failed to sync reservation names', err);
+      }
     }
-    setUserProfile(newProfile);
+    await setUserProfile(newProfile);
   };
+
+  const toggleFavoriteRoom = useCallback(async (roomId: string) => {
+    if (!userProfile || isStaff) return;
+    const next = favoritedRooms.includes(roomId)
+      ? favoritedRooms.filter((id) => id !== roomId)
+      : [...favoritedRooms, roomId];
+    await handleUpdateProfile({ ...userProfile, favoritedRoomIds: next });
+  }, [userProfile, favoritedRooms, isStaff, handleUpdateProfile]);
 
   const handleCancelReservation = async (id: string) => {
     try {
       await cancelBookingRemote(id);
     } catch (err) {
       console.error('Cancel failed', err);
+      setCancelError('Could not cancel reservation. Try again.');
+      setTimeout(() => setCancelError(null), 5000);
     }
   };
 
-  const handleAppendToReservation = (reservationId: string, menuItems: { itemId: string; quantity: number; comment?: string; deliveryTime?: string }[], totalPrice: number, orderComment?: string, paymentMethod?: string) => {
-    setAllReservations(prev => prev.map(r => {
-      if (r.id === reservationId) {
-        if (paymentMethod === 'credits' && r.userEmail) {
-           setAllUsers(users => users.map(u => u.email === r.userEmail ? { ...u, credits: Math.max(0, u.credits - totalPrice) } : u));
-           if (userProfile.email === r.userEmail) {
-             setUserProfile(p => ({ ...p, credits: Math.max(0, p.credits - totalPrice) }));
-           }
-        }
-        return {
-           ...r, 
-           selectedMenuItems: [...(r.selectedMenuItems || []), ...menuItems],
-           totalOrderComment: r.totalOrderComment ? `${r.totalOrderComment}\n${orderComment || ''}` : (orderComment || ''),
-           hasInstorePurchases: true,
-           totalPrice: r.totalPrice + totalPrice
-        };
-      }
-      return r;
-    }));
+  const handleAppendToReservation = async (
+    reservationId: string,
+    menuItems: { itemId: string; quantity: number; comment?: string; deliveryTime?: string }[],
+    totalPrice: number,
+    orderComment?: string,
+    paymentMethod?: string,
+  ) => {
+    try {
+      await appendReservationOrderRemote({
+        reservationId,
+        menuItems,
+        totalPrice,
+        orderComment,
+        paymentMethod,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not add order to reservation.';
+      setBookingError(message);
+      setTimeout(() => setBookingError(null), 5000);
+    }
   };
 
-  const currentMenuData = useMemo(() => {
-    if (menuSource.type === 'room' && menuSource.id) {
-      const room = roomsForCurrentView.find(r => r.id === menuSource.id);
-      if (room?.menu && room.menu.length > 0) return { categories: room.categories || [], menu: room.menu };
-    }
-    // If it's a branch or room fallback, use the location's menu
-    if (menuSource.type === 'branch' || (menuSource.type === 'room' && menuSource.id)) {
-      return { categories: currentLocation?.categories || [], menu: currentLocation?.menu || [] };
-    }
-    // Global fallback (vendor level)
-    return { categories: selectedVendor?.categories || [], menu: selectedVendor?.menu || [] };
-  }, [menuSource, roomsForCurrentView, currentLocation, selectedVendor]);
+  const selectedRoomForMenu = useMemo(() => {
+    if (menuSource.type !== 'room' || !menuSource.id) return null;
+    return roomsForCurrentView.find((r) => r.id === menuSource.id) || null;
+  }, [menuSource, roomsForCurrentView]);
 
-  const menuItemById = useMemo(() => {
-    const map = new Map<string, NonNullable<typeof currentMenuData.menu>[number]>();
-    for (const item of currentMenuData.menu || []) map.set(item.id, item);
-    for (const item of selectedVendor?.menu || []) if (!map.has(item.id)) map.set(item.id, item);
-    for (const item of currentLocation?.menu || []) if (!map.has(item.id)) map.set(item.id, item);
-    for (const floor of currentLocation?.floors || []) {
-      for (const room of floor.rooms || []) {
-        for (const item of room.menu || []) if (!map.has(item.id)) map.set(item.id, item);
-      }
-    }
-    return map;
-  }, [currentMenuData, selectedVendor, currentLocation]);
+  const currentMenuData = useMemo(
+    () =>
+      mergeMenuCatalog({
+        vendor: selectedVendor,
+        location: currentLocation,
+        room: selectedRoomForMenu,
+      }),
+    [selectedVendor, currentLocation, selectedRoomForMenu],
+  );
+
+  const menuItemById = useMemo(
+    () =>
+      buildMenuItemLookup({
+        vendor: selectedVendor,
+        location: currentLocation,
+        room: selectedRoomForMenu,
+      }),
+    [selectedVendor, currentLocation, selectedRoomForMenu],
+  );
 
   const getMenuItemById = useCallback((id: string) => menuItemById.get(id), [menuItemById]);
 
@@ -631,15 +969,6 @@ const App: React.FC = () => {
     return { basketTotal: total, basketCount: count };
   }, [basket, menuItemById]);
 
-  const handleUpdateRoom = (roomId: string, updates: Partial<Room>) => {
-    setAllLocations(prev => prev.map(loc => ({
-      ...loc,
-      floors: loc.floors.map(floor => ({
-        ...floor,
-        rooms: floor.rooms.map(room => room.id === roomId ? { ...room, ...updates } : room)
-      }))
-    })));
-  };
 
   const allSelectedRooms = useMemo(() => {
     if (!selectedVendor) return [];
@@ -671,21 +1000,23 @@ const App: React.FC = () => {
                     </select>
                   </div>
                   <p className="text-sm font-bold text-slate-400 uppercase tracking-widest">{selectedDate} @ {displayTime12h}</p>
-                  {currentLocation?.mapUrl ? (
-                    <a 
-                      href={currentLocation.mapUrl} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl shadow-sm border border-slate-100 text-[10px] font-black text-blue-600 uppercase tracking-widest hover:text-blue-700 transition-colors"
-                    >
-                      <MapPin size={14} className="text-rose-500" />
-                      {currentLocation.name}
-                    </a>
-                  ) : (
-                    <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl shadow-sm border border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
-                      <MapPin size={14} className="text-slate-300" />
-                      {currentLocation?.name}
-                    </div>
+                  {userRole !== 'employee' && (
+                    currentLocation?.mapUrl ? (
+                      <a 
+                        href={currentLocation.mapUrl} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl shadow-sm border border-slate-100 text-[10px] font-black text-blue-600 uppercase tracking-widest hover:text-blue-700 transition-colors"
+                      >
+                        <MapPin size={14} className="text-rose-500" />
+                        {currentLocation.name}
+                      </a>
+                    ) : (
+                      <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl shadow-sm border border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <MapPin size={14} className="text-slate-300" />
+                        {currentLocation?.name}
+                      </div>
+                    )
                   )}
                </div>
               </div>
@@ -708,7 +1039,7 @@ const App: React.FC = () => {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        setFavoritedRooms(prev => prev.includes(room.id) ? prev.filter(id => id !== room.id) : [...prev, room.id]);
+                        void toggleFavoriteRoom(room.id);
                       }}
                       className={`absolute top-1 right-1 p-1 rounded-full transition-opacity ${
                         favoritedRooms.includes(room.id) ? 'text-amber-400 opacity-100' : 'text-slate-400/50 opacity-0 group-hover:opacity-100 hover:text-amber-400'
@@ -735,19 +1066,22 @@ const App: React.FC = () => {
                   <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-400 text-sm font-bold">Loading...</div>}>
                   <RoomDetail 
                     rooms={allSelectedRooms} 
-                    onBook={(rooms, duration, paymentMethod, user, menuItems, totalPrice, totalComment) => {
-                      handleBook(rooms, duration, paymentMethod, user, menuItems, totalPrice, totalComment);
-                      setBasket({}); // Clear basket after booking
-                      setBasketComments({});
-                      setBasketDeliveryTimes({});
-                      setTotalOrderComment("");
+                    onBook={async (rooms, duration, paymentMethod, user, menuItems, totalPrice, totalComment) => {
+                      const ok = await handleBook(rooms, duration, paymentMethod, user, menuItems, totalPrice, totalComment);
+                      if (ok) {
+                        setBasket({});
+                        setBasketComments({});
+                        setBasketDeliveryTimes({});
+                        setTotalOrderComment("");
+                      }
+                      return ok;
                     }} 
                     selectedDate={selectedDate} 
                     selectedTime={displayTime12h} 
                     selectedTime24={selectedTime24h} 
                     isStaff={isStaff}
                     allUsers={allUsers}
-                    userProfile={userProfile}
+                    userProfile={userProfile!}
                     onUpdateProfile={handleUpdateProfile}
                     reservationTimer={reservationTimer}
                     cancellationPolicy={effectiveCancellationPolicy}
@@ -786,8 +1120,20 @@ const App: React.FC = () => {
               console.error('Approve failed', err);
             }
           }}
-          onUpdateOrderStatus={(ids, status) => setAllReservations(prev => prev.map(r => ids.includes(r.id) ? { ...r, orderStatus: status } : r))}
-          userProfile={userProfile} 
+          onUpdateOrderStatus={async (ids, orderStatus) => {
+            for (const id of ids) {
+              const reservation = allReservations.find((r) => r.id === id);
+              if (!reservation) continue;
+              try {
+                await updateReservationStatusRemote(id, reservation.status, orderStatus);
+              } catch (err) {
+                console.error('Order status update failed', err);
+                setBookingError('Could not update order status.');
+                setTimeout(() => setBookingError(null), 4000);
+              }
+            }
+          }}
+          userProfile={userProfile!} 
           allUsers={allUsers} 
           cancellationPolicy={effectiveCancellationPolicy} 
         />
@@ -797,9 +1143,12 @@ const App: React.FC = () => {
         return <PropertyConfig userRole={userRole as any} location={currentLocation} activeFloorId={currentFloorId} locations={vendorLocations} vendor={selectedVendor!} onUpdateRooms={(newRooms) => setAllLocations(prev => {
           const next = prev.map(l => l.id === currentLocationId ? {...l, floors: l.floors.map(f => f.id === currentFloorId ? {...f, rooms: newRooms} : f)} : l);
           const updated = next.find(l => l.id === currentLocationId);
-          if (updated && isStaff) void saveLocation(updated);
+          if (updated && pendingLocationsRef.current.has(currentLocationId)) {
+            pendingLocationsRef.current.set(currentLocationId, updated);
+          }
+          if (updated) persistLocation(updated);
           return next;
-        })} onSwitchLocation={setCurrentLocationId} onSwitchFloor={setCurrentFloorId} onUpdateVendor={handleUpdateVendor} onUpdateLocationMeta={handleUpdateLocationMeta} onAddLocation={handleAddLocation} view={configView} onViewChange={setConfigView} allReservations={allReservations} />;
+        })} onSwitchLocation={setCurrentLocationId} onSwitchFloor={setCurrentFloorId} onUpdateVendor={handleUpdateVendor} onUpdateLocationMeta={handleUpdateLocationMeta} onStaffCodeFocus={(locId) => { editingStaffCodeLocRef.current = locId; }} onStaffCodeBlur={(locId) => { if (editingStaffCodeLocRef.current === locId) editingStaffCodeLocRef.current = null; }} onAddLocation={handleAddLocation} view={configView} onViewChange={setConfigView} allReservations={allReservations} />;
       }
       if (activeTab === 'menu_config') {
         if (!currentLocation) return <div className="flex-1 flex flex-col items-center justify-center pt-20"><div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center text-slate-400 mb-4"><AlertCircle size={24} /></div><p className="font-bold text-slate-500">No Branch Selected / Available</p></div>;
@@ -810,6 +1159,25 @@ const App: React.FC = () => {
             onUpdateVendor={v => handleUpdateVendor(selectedVendor!.id, v)} 
             location={currentLocation}
             onUpdateLocation={l => handleUpdateLocationMeta(currentLocation.id, l)}
+            onUpdateRoomMenu={(roomId, patch) => {
+              setAllLocations((prev) => {
+                const next = prev.map((loc) => {
+                  if (loc.id !== currentLocationId) return loc;
+                  return {
+                    ...loc,
+                    floors: loc.floors.map((floor) => ({
+                      ...floor,
+                      rooms: floor.rooms.map((room) =>
+                        room.id === roomId ? { ...room, ...patch } : room,
+                      ),
+                    })),
+                  };
+                });
+                const updated = next.find((l) => l.id === currentLocationId);
+                if (updated) persistLocation(updated);
+                return next;
+              });
+            }}
             allUsers={allUsers}
             onBook={handleBook}
             allReservations={allReservations}
@@ -833,8 +1201,8 @@ const App: React.FC = () => {
           reservations={allReservations.filter(r => r.vendorId === selectedVendor?.id)}
           isGlobalAccess={userRole === 'owner'}
           clockedInEmployeeIds={clockedInEmployeeIds}
-          setClockedInEmployeeIds={setClockedInEmployeeIds}
           viewMode="analytics"
+          pinEntrySuspended={showAccessCodeModal}
         />
       );
       if (activeTab === 'staff_management' && userRole === 'owner') return (
@@ -844,8 +1212,8 @@ const App: React.FC = () => {
           reservations={allReservations.filter(r => r.vendorId === selectedVendor?.id)}
           isGlobalAccess={true}
           clockedInEmployeeIds={clockedInEmployeeIds}
-          setClockedInEmployeeIds={setClockedInEmployeeIds}
           viewMode="management"
+          pinEntrySuspended={showAccessCodeModal}
         />
       );
       if (activeTab === 'cancellation_policies' && userRole === 'owner') return (
@@ -857,8 +1225,24 @@ const App: React.FC = () => {
         />
       );
     }
-    if (activeTab === 'profile') return <ProfilePage user={userProfile} reservations={allReservations} onLogout={handleLogout} onUpdateProfile={handleUpdateProfile} />;
-    if (activeTab === 'my_bookings') return <MyBookingsPage reservations={allReservations} locations={allLocations} vendors={allVendors} userName={userProfile.name} onCancel={handleCancelReservation} />;
+    if (activeTab === 'profile') return <ProfilePage user={userProfile!} reservations={allReservations} onLogout={handleLogout} onUpdateProfile={handleUpdateProfile} />;
+    if (activeTab === 'my_bookings') return <MyBookingsPage reservations={allReservations} locations={allLocations} vendors={allVendors} userId={userProfile?.uid || user?.uid} onCancel={handleCancelReservation} />;
+    if (activeTab === 'favorites') return (
+      <FavoritesPage
+        favoritedRoomIds={favoritedRooms}
+        locations={allLocations}
+        vendors={allVendors}
+        onNavigateToRoom={(vendorId, locationId, floorId, roomId) => {
+          const vendor = allVendors.find((v) => v.id === vendorId);
+          if (vendor) setSelectedVendor(vendor);
+          setCurrentLocationId(locationId);
+          setCurrentFloorId(floorId);
+          setIsLocationConfirmed(true);
+          setSelectedRoomIds([roomId]);
+          goToTab('blueprint');
+        }}
+      />
+    );
     if (activeTab === 'credits') return (
       <div className="flex-1 bg-slate-50/30 overflow-y-auto p-10 font-['Inter']">
         <div className="max-w-5xl mx-auto">
@@ -878,7 +1262,7 @@ const App: React.FC = () => {
                     </div>
                     <div>
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Available Balance</p>
-                      <h3 className="text-5xl font-black text-slate-900 tracking-tighter">{userProfile.credits.toLocaleString()} <span className="text-2xl text-blue-600">EGP</span></h3>
+                      <h3 className="text-5xl font-black text-slate-900 tracking-tighter">{userProfile!.credits.toLocaleString()} <span className="text-2xl text-blue-600">EGP</span></h3>
                     </div>
                   </div>
                   
@@ -1032,34 +1416,34 @@ const App: React.FC = () => {
     return null;
   };
 
-  if (postLoginAction === 'privacy') {
+  if (location.pathname === '/privacy') {
     return (
       <Suspense fallback={<PageLoader />}>
-        <PrivacyPage onBack={() => setPostLoginAction(isLoggedIn ? (selectedVendor ? 'select_network' : null) : null)} />
+        <PrivacyPage onBack={() => navigate(isLoggedIn ? (selectedVendor ? '/network' : '/menu') : '/login')} />
       </Suspense>
     );
   }
 
-  if (postLoginAction === 'terms') {
+  if (location.pathname === '/terms') {
     return (
       <Suspense fallback={<PageLoader />}>
-        <TermsPage onBack={() => setPostLoginAction(isLoggedIn ? (selectedVendor ? 'select_network' : null) : null)} />
+        <TermsPage onBack={() => navigate(isLoggedIn ? (selectedVendor ? '/network' : '/menu') : '/login')} />
       </Suspense>
     );
   }
 
-  if (postLoginAction === 'support') {
+  if (location.pathname === '/support') {
     return (
       <Suspense fallback={<PageLoader />}>
-        <SupportPage onBack={() => setPostLoginAction(isLoggedIn ? (selectedVendor ? 'select_network' : null) : null)} />
+        <SupportPage onBack={() => navigate(isLoggedIn ? (selectedVendor ? '/network' : '/menu') : '/login')} />
       </Suspense>
     );
   }
 
-  if (postLoginAction === 'api_status') {
+  if (location.pathname === '/api-status') {
     return (
       <Suspense fallback={<PageLoader />}>
-        <APIStatusPage onBack={() => setPostLoginAction(isLoggedIn ? (selectedVendor ? 'select_network' : null) : null)} />
+        <APIStatusPage onBack={() => navigate(isLoggedIn ? (selectedVendor ? '/network' : '/menu') : '/login')} />
       </Suspense>
     );
   }
@@ -1068,21 +1452,25 @@ const App: React.FC = () => {
     return <div className="min-h-screen flex items-center justify-center bg-gray-50"><p className="text-gray-500">Loading...</p></div>;
   }
 
+  if (isAuthenticated && !userProfile) {
+    return <PageLoader />;
+  }
+
   if (!isLoggedIn) return (
     <Suspense fallback={<PageLoader />}>
     <LandingPage 
       onCodeLogin={handleCodeLogin}
-      onShowPrivacy={() => setPostLoginAction('privacy')}
-      onShowTerms={() => setPostLoginAction('terms')}
-      onShowSupport={() => setPostLoginAction('support')}
+      onShowPrivacy={() => navigate('/privacy')}
+      onShowTerms={() => navigate('/terms')}
+      onShowSupport={() => navigate('/support')}
     />
     </Suspense>
   );
 
-  if (isLoggedIn && !postLoginAction && !isStaff) {
-    const emailVerified = userProfile?.emailVerified === true;
-    const phoneVerified = !!normalizePhoneDigits(user?.phoneNumber ?? undefined);
-    const hasUnverifiedContact = !emailVerified || !phoneVerified;
+  if (isLoggedIn && location.pathname === '/menu' && !isStaff) {
+    const emailVerified = isEmailVerified(userProfile);
+    const phoneVerified = isPhoneVerified(userProfile, user);
+    const hasUnverifiedContact = !isContactVerified(userProfile, user);
 
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-['Inter']">
@@ -1126,7 +1514,7 @@ const App: React.FC = () => {
                 )}
               </div>
               <button
-                onClick={() => setPostLoginAction('edit_profile')}
+                onClick={() => navigate('/menu/profile')}
                 className="w-full py-3 rounded-xl bg-red-600 text-white font-black text-[10px] uppercase tracking-widest hover:bg-red-700 transition-colors"
               >
                 Verify Contact Information
@@ -1135,14 +1523,33 @@ const App: React.FC = () => {
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <button onClick={() => setPostLoginAction('select_network')} className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-xl hover:shadow-2xl hover:border-blue-200 transition-all group flex flex-col items-center text-center">
-              <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-3xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+            <button
+              onClick={() => {
+                if (!isCustomerVerified) {
+                  setBookingError(verificationBlockMessage || 'Verify your contact information before accessing the network.');
+                  setTimeout(() => setBookingError(null), 5000);
+                  return;
+                }
+                navigate('/network');
+              }}
+              disabled={hasUnverifiedContact}
+              className={`bg-white p-10 rounded-[2.5rem] border shadow-xl transition-all group flex flex-col items-center text-center ${
+                hasUnverifiedContact
+                  ? 'border-slate-200 opacity-60 cursor-not-allowed'
+                  : 'border-slate-200 hover:shadow-2xl hover:border-blue-200'
+              }`}
+            >
+              <div className={`w-20 h-20 rounded-3xl flex items-center justify-center mb-6 transition-transform ${
+                hasUnverifiedContact ? 'bg-slate-100 text-slate-400' : 'bg-blue-50 text-blue-600 group-hover:scale-110'
+              }`}>
                 <Globe size={32} />
               </div>
               <h2 className="text-2xl font-black text-slate-900 mb-2">Access Network</h2>
-              <p className="text-slate-500 font-medium">Browse locations and book workspaces</p>
+              <p className="text-slate-500 font-medium">
+                {hasUnverifiedContact ? 'Verify email and phone to unlock booking' : 'Browse locations and book workspaces'}
+              </p>
             </button>
-            <button onClick={() => setPostLoginAction('edit_profile')} className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-xl hover:shadow-2xl hover:border-blue-200 transition-all group flex flex-col items-center text-center">
+            <button onClick={() => navigate('/menu/profile')} className="bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-xl hover:shadow-2xl hover:border-blue-200 transition-all group flex flex-col items-center text-center">
               <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
                 <User size={32} />
               </div>
@@ -1154,30 +1561,35 @@ const App: React.FC = () => {
             <button onClick={handleLogout} className="text-slate-400 font-bold hover:text-slate-600 transition-colors">Sign Out</button>
           </div>
         </div>
+        {bookingError && (
+          <div className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-rose-600 text-white px-10 py-6 rounded-3xl shadow-2xl z-[150] font-black animate-in fade-in slide-in-from-bottom-6 max-w-lg text-center">
+            {bookingError}
+          </div>
+        )}
       </div>
     );
   }
 
-  if (postLoginAction === 'edit_profile' && !isStaff) {
+  if (location.pathname === '/menu/profile' && !isStaff) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col font-['Inter']">
         <div className="p-6">
-          <button onClick={() => setPostLoginAction(null)} className="flex items-center gap-2 text-slate-500 hover:text-slate-900 font-bold transition-colors">
+          <button onClick={() => navigate('/menu')} className="flex items-center gap-2 text-slate-500 hover:text-slate-900 font-bold transition-colors">
             <ChevronLeft size={20} /> Back to Menu
           </button>
         </div>
         <Suspense fallback={<PageLoader />}>
-        <ProfilePage user={userProfile} reservations={allReservations} onLogout={handleLogout} onUpdateProfile={handleUpdateProfile} onClose={() => setPostLoginAction(null)} />
+        <ProfilePage user={userProfile!} reservations={allReservations} onLogout={handleLogout} onUpdateProfile={handleUpdateProfile} onClose={() => navigate('/menu')} />
         </Suspense>
       </div>
     );
   }
 
-  if (postLoginAction === 'create_space' && isStaff) {
+  if (location.pathname === '/staff/create-space' && isStaff) {
     return (
       <Suspense fallback={<PageLoader />}>
       <CreateSpacePage 
-        onBack={() => setPostLoginAction(null)} 
+        onBack={() => navigate('/network')} 
         onCreate={(newVendor) => {
           const newLocation: LocationData = {
             id: `${newVendor.id}-hq`,
@@ -1195,11 +1607,16 @@ const App: React.FC = () => {
             ]
           };
 
+          pendingLocationsRef.current.set(newLocation.id, newLocation);
           setAllVendors((prev) => [...prev, newVendor]);
           setAllLocations((prev) => [...prev, newLocation]);
-          void saveVendor(newVendor);
-          void saveLocation(newLocation);
-          setPostLoginAction(null);
+          if (user) {
+            void saveVendor(newVendor);
+            void saveLocation(newLocation).catch((error) => {
+              console.error('Failed to save new space location', error);
+            });
+          }
+          navigate('/network');
         }} 
       />
       </Suspense>
@@ -1220,24 +1637,40 @@ const App: React.FC = () => {
     );
   }
 
-  if (!selectedVendor) return (
+  if (
+    isLoggedIn &&
+    !isStaff &&
+    location.pathname !== '/menu' &&
+    location.pathname !== '/menu/profile' &&
+    !location.pathname.startsWith('/network') &&
+    !isStaticPagePath(location.pathname)
+  ) {
+    navigate('/menu', { replace: true });
+    return <PageLoader />;
+  }
+
+  if (location.pathname.startsWith('/network') && !selectedVendor && !parsedNetwork?.vendorId) {
+    return (
     <Suspense fallback={<PageLoader />}>
     <VendorSelection 
       vendors={allVendors.map(v => ({ ...v, locationCount: allLocations.filter(loc => loc.vendorId === v.id).length > 0 ? allLocations.filter(loc => loc.vendorId === v.id).length : v.locationCount }))} 
       locations={allLocations}
-      onSelect={setSelectedVendor} 
+      onSelect={(vendor) => {
+        setSelectedVendor(vendor);
+        navigate(buildVendorPath(vendor.id));
+      }} 
       onBack={() => { 
         if (userRole === 'customer') {
-          setPostLoginAction(null);
+          navigate('/menu');
         } else {
-          handleLogout();
+          void handleLogout();
         }
       }} 
       userRole={userRole || 'customer'} 
-      onCreateSpace={() => setPostLoginAction('create_space')}
-      onShowPrivacy={() => setPostLoginAction('privacy')}
-      onShowTerms={() => setPostLoginAction('terms')}
-      onShowSupport={() => setPostLoginAction('support')}
+      onCreateSpace={() => navigate('/staff/create-space')}
+      onShowPrivacy={() => navigate('/privacy')}
+      onShowTerms={() => navigate('/terms')}
+      onShowSupport={() => navigate('/support')}
       selectedTags={selectedTags}
       setSelectedTags={setSelectedTags}
       selectedCities={selectedCities}
@@ -1245,11 +1678,14 @@ const App: React.FC = () => {
       allTags={allGlobalTags}
       allCities={allGlobalCities}
       userName={userProfile?.name}
-      userProfile={userProfile}
+      userProfile={userProfile ?? undefined}
     />
     </Suspense>
-  );
-  if (!isLocationConfirmed) return (
+    );
+  }
+
+  if (location.pathname.startsWith('/network') && selectedVendor && !isLocationConfirmed && !parsedNetwork?.locationId) {
+    return (
     <Suspense fallback={<PageLoader />}>
     <LocationSelection 
     vendor={selectedVendor} 
@@ -1260,9 +1696,10 @@ const App: React.FC = () => {
       if (loc && loc.floors.length > 0) {
         setCurrentFloorId(loc.floors[0].id);
       }
-      setIsLocationConfirmed(true); 
+      setIsLocationConfirmed(true);
+      navigate(buildNetworkPath(selectedVendor.id, id, activeTab));
     }} 
-    onBack={() => { setSelectedVendor(null); setIsLocationConfirmed(false); }} 
+    onBack={() => { setSelectedVendor(null); setIsLocationConfirmed(false); navigate('/network'); }} 
     activeLocationId={currentLocationId} 
     userRole={userRole || 'customer'} 
     allReservations={allReservations}
@@ -1273,10 +1710,15 @@ const App: React.FC = () => {
     allTags={allGlobalTags}
     allCities={allGlobalCities}
     userName={userProfile?.name}
-    userProfile={userProfile}
+    userProfile={userProfile ?? undefined}
   />
   </Suspense>
   );
+  }
+
+  if (!selectedVendor || !isLocationConfirmed) {
+    return <PageLoader />;
+  }
 
   return (
     <div className="min-h-screen flex bg-slate-50 overflow-hidden font-['Inter']">
@@ -1285,7 +1727,7 @@ const App: React.FC = () => {
         <nav className="flex-1 space-y-2">
           {!isStaff ? (
             <>
-              <button onClick={() => setActiveTab('blueprint')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'blueprint' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><MapIcon size={20} /><span className="font-black text-sm hidden lg:block">Blueprint</span></button>
+              <button onClick={() => goToTab('blueprint')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'blueprint' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><MapIcon size={20} /><span className="font-black text-sm hidden lg:block">Blueprint</span></button>
               <div className="flex flex-col w-full">
                 <button 
                   onClick={() => { 
@@ -1321,14 +1763,15 @@ const App: React.FC = () => {
                   )}
                 </AnimatePresence>
               </div>
-              <button onClick={() => setActiveTab('my_bookings')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'my_bookings' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Calendar size={20} /><span className="font-black text-sm hidden lg:block">My Bookings</span></button>
-              <button onClick={() => setActiveTab('credits')} className={`w-full flex items-center justify-between px-4 py-4 rounded-2xl transition-all ${activeTab === 'credits' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}>
+              <button onClick={() => goToTab('my_bookings')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'my_bookings' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Calendar size={20} /><span className="font-black text-sm hidden lg:block">My Bookings</span></button>
+              <button onClick={() => goToTab('favorites')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'favorites' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Star size={20} /><span className="font-black text-sm hidden lg:block">Favorites</span></button>
+              <button onClick={() => goToTab('credits')} className={`w-full flex items-center justify-between px-4 py-4 rounded-2xl transition-all ${activeTab === 'credits' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}>
                 <div className="flex items-center gap-4">
                   <Coins size={20} />
                   <span className="font-black text-sm hidden lg:block">Balance</span>
                 </div>
                 <span className={`hidden lg:block text-[10px] font-black px-2 py-0.5 rounded-lg ${activeTab === 'credits' ? 'bg-white/20' : 'bg-emerald-50 text-emerald-600'}`}>
-                  {userProfile.credits.toLocaleString()} EGP
+                  {userProfile!.credits.toLocaleString()} EGP
                 </span>
               </button>
             </>
@@ -1337,14 +1780,14 @@ const App: React.FC = () => {
               <div className="px-4 py-2 mb-4">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Global Access</p>
               </div>
-              <button onClick={() => { setActiveTab('property_config'); setConfigView('layout'); }} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'property_config' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Settings size={20} /><span className="font-black text-sm hidden lg:block">Config</span></button>
-              <button onClick={() => setActiveTab('menu_config')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'menu_config' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Utensils size={20} /><span className="font-black text-sm hidden lg:block">Menu</span></button>
-              <button onClick={() => setActiveTab('analytics')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'analytics' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><BarChart3 size={20} /><span className="font-black text-sm hidden lg:block">Store Analytics</span></button>
-              <button onClick={() => setActiveTab('shift_summary')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'shift_summary' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><BarChart3 size={20} /><span className="font-black text-sm hidden lg:block">Staff Analytics</span></button>
-              <button onClick={() => setActiveTab('staff_management')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'staff_management' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><User size={20} /><span className="font-black text-sm hidden lg:block">Staff Management</span></button>
-              <button onClick={() => setActiveTab('cancellation_policies')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'cancellation_policies' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Ban size={20} /><span className="font-black text-sm hidden lg:block">Cancellation Policies</span></button>
+              <button onClick={() => { goToTab('property_config'); setConfigView('layout'); }} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'property_config' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Settings size={20} /><span className="font-black text-sm hidden lg:block">Config</span></button>
+              <button onClick={() => goToTab('menu_config')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'menu_config' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Utensils size={20} /><span className="font-black text-sm hidden lg:block">Menu</span></button>
+              <button onClick={() => goToTab('analytics')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'analytics' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><BarChart3 size={20} /><span className="font-black text-sm hidden lg:block">Store Analytics</span></button>
+              <button onClick={() => goToTab('shift_summary')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'shift_summary' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><BarChart3 size={20} /><span className="font-black text-sm hidden lg:block">Staff Analytics</span></button>
+              <button onClick={() => goToTab('staff_management')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'staff_management' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><User size={20} /><span className="font-black text-sm hidden lg:block">Staff Management</span></button>
+              <button onClick={() => goToTab('cancellation_policies')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'cancellation_policies' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Ban size={20} /><span className="font-black text-sm hidden lg:block">Cancellation Policies</span></button>
               <button 
-                onClick={() => setShowAccessCodeModal(true)} 
+                onClick={openAccessCodeModal} 
                 className="w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all text-slate-400 hover:bg-blue-50 hover:text-blue-600 group"
               >
                 <div className="relative">
@@ -1359,11 +1802,11 @@ const App: React.FC = () => {
               <div className="px-4 py-2 mb-4">
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Staff Portal</p>
               </div>
-              <button onClick={() => setActiveTab('staff_registry')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'staff_registry' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><ShieldCheck size={20} /><span className="font-black text-sm hidden lg:block">Registry</span></button>
-              <button onClick={() => setActiveTab('blueprint')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'blueprint' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Eye size={20} /><span className="font-black text-sm hidden lg:block">Live View</span></button>
-              <button onClick={() => setActiveTab('menu_config')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'menu_config' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Utensils size={20} /><span className="font-black text-sm hidden lg:block">Menu</span></button>
+              <button onClick={() => goToTab('staff_registry')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'staff_registry' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><ShieldCheck size={20} /><span className="font-black text-sm hidden lg:block">Registry</span></button>
+              <button onClick={() => goToTab('blueprint')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'blueprint' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Eye size={20} /><span className="font-black text-sm hidden lg:block">Live View</span></button>
+              <button onClick={() => goToTab('menu_config')} className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all ${activeTab === 'menu_config' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}><Utensils size={20} /><span className="font-black text-sm hidden lg:block">Menu</span></button>
               <button 
-                onClick={() => setShowAccessCodeModal(true)} 
+                onClick={openAccessCodeModal} 
                 className="w-full flex items-center gap-4 px-4 py-4 rounded-2xl transition-all text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 group"
               >
                 <div className="relative">
@@ -1377,7 +1820,7 @@ const App: React.FC = () => {
         </nav>
         {userRole === 'employee' && (
           <button 
-            onClick={() => setActiveTab('shift_summary')} 
+            onClick={() => goToTab('shift_summary')} 
             className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all mb-2 ${activeTab === 'shift_summary' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:bg-slate-50'}`}
           >
             <User size={20} />
@@ -1385,13 +1828,14 @@ const App: React.FC = () => {
           </button>
         )}
         <button 
-          onClick={() => { 
+          onClick={() => {
             if (userRole === 'employee') {
               handleLogout();
-            } else {
-              setSelectedVendor(null); 
-              setIsLocationConfirmed(false); 
+              return;
             }
+            setSelectedVendor(null);
+            setIsLocationConfirmed(false);
+            navigate(userRole === 'customer' ? '/menu' : '/network');
           }} 
           className="mt-auto w-full flex items-center gap-4 px-6 py-4 rounded-2xl bg-white border border-slate-200 text-slate-500 hover:text-rose-600 transition-all"
         >
@@ -1425,13 +1869,15 @@ const App: React.FC = () => {
           </div>
           <div className="flex items-center gap-4">
             {userRole === 'employee' && (
-              <ShiftTimerWidget
-                isActive={isShiftActive}
-                onEndShift={() => setIsShiftActive(false)}
-              />
+              <Suspense fallback={null}>
+                <ShiftTimerWidget
+                  isActive={isShiftActive}
+                  onEndShift={() => setShiftActive(false)}
+                />
+              </Suspense>
             )}
              {!isStaff && (
-               <button onClick={() => setIsLocationConfirmed(false)} className="flex items-center gap-2 hover:text-blue-600 font-black text-[10px] uppercase tracking-[0.2em] transition-colors group text-slate-400 mr-4">
+               <button onClick={() => { setIsLocationConfirmed(false); navigate(buildVendorPath(selectedVendor!.id)); }} className="flex items-center gap-2 hover:text-blue-600 font-black text-[10px] uppercase tracking-[0.2em] transition-colors group text-slate-400 mr-4">
                  <ChevronLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
                  Back to Branches
                </button>
@@ -1453,7 +1899,7 @@ const App: React.FC = () => {
                 <h3 className="text-2xl font-black text-slate-900 mb-2">Start Your Shift</h3>
                 <p className="text-sm font-bold text-slate-500 mb-8">You need to start your work day to access the staff portal and manage reservations.</p>
                 <button 
-                  onClick={() => setIsShiftActive(true)}
+                  onClick={() => setShiftActive(true)}
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/20 font-black text-sm px-6 py-4 rounded-xl transition-all hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2"
                 >
                   <Check size={18} /> Begin Work Day
@@ -1596,6 +2042,7 @@ const App: React.FC = () => {
 
       {showBookingSuccess && <div className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-10 py-6 rounded-3xl shadow-2xl flex items-center gap-5 z-[150] animate-in fade-in slide-in-from-bottom-6"><div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center"><Check size={24} /></div><div><p className="font-black text-xl">Reservation Confirmed!</p></div></div>}
       {bookingError && <div className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-rose-600 text-white px-10 py-6 rounded-3xl shadow-2xl z-[150] font-black animate-in fade-in slide-in-from-bottom-6">{bookingError}</div>}
+      {cancelError && <div className="fixed bottom-12 left-1/2 -translate-x-1/2 bg-rose-600 text-white px-10 py-6 rounded-3xl shadow-2xl z-[150] font-black animate-in fade-in slide-in-from-bottom-6">{cancelError}</div>}
       
       {/* Basket/Review Modal */}
       <AnimatePresence>
@@ -1783,22 +2230,39 @@ const App: React.FC = () => {
                 {userRole === 'owner' ? (
                   <input
                     type="text"
-                    value={currentLocation.staffAccessCode || ''}
-                    onChange={(e) => handleUpdateLocationMeta(currentLocation.id, { staffAccessCode: e.target.value })}
+                    value={staffCodeDraft}
+                    onFocus={() => {
+                      editingStaffCodeLocRef.current = currentLocation.id;
+                      staffCodeDirtyRef.current.add(currentLocation.id);
+                    }}
+                    onChange={(e) => setStaffCodeDraft(e.target.value)}
+                    onBlur={(e) => {
+                      editingStaffCodeLocRef.current = null;
+                      const normalized = e.currentTarget.value.trim().toUpperCase();
+                      setStaffCodeDraft(normalized);
+                      staffCodeDirtyRef.current.add(currentLocation.id);
+                      handleUpdateLocationMeta(currentLocation.id, { staffAccessCode: normalized });
+                    }}
                     className="w-full text-center text-4xl font-black text-emerald-600 tracking-[0.1em] bg-transparent outline-none border-b-2 border-transparent focus:border-emerald-200 transition-colors"
                     placeholder="ENTER CODE"
                   />
                 ) : (
                   <span className="text-5xl font-black text-emerald-600 tracking-[0.1em] select-all cursor-copy group-hover:scale-105 transition-transform">
-                    {currentLocation.staffAccessCode || 'NOT SET'}
+                    {resolvedBranchCode || 'NOT SET'}
                   </span>
                 )}
               </div>
               
-              <div className="flex items-center gap-3 py-3 px-6 bg-emerald-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-100">
-                <Check size={16} strokeWidth={3} />
-                Synced & Active
-              </div>
+              {(resolvedBranchCode || currentLocation.staffAccessCode) ? (
+                <div className="flex items-center gap-3 py-3 px-6 bg-emerald-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-xl shadow-emerald-100">
+                  <Check size={16} strokeWidth={3} />
+                  Synced & Active
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 py-3 px-6 bg-slate-200 text-slate-500 rounded-2xl font-black text-xs uppercase tracking-widest">
+                  Not configured
+                </div>
+              )}
             </motion.div>
           </div>
         )}

@@ -52,6 +52,7 @@ async function runNovaBot(
       matchingTags: [] as string[],
       matchingCities: [] as string[],
       filterAction: 'replace' as const,
+      shouldApplyFilters: false,
     };
   }
 
@@ -79,7 +80,15 @@ Available Filter Tags: ${JSON.stringify(allAvailableTags)}
 Available Cities: ${JSON.stringify(allAvailableCities)}
 User name: "${userName || 'there'}", profession: "${userProfession || 'Member'}".
 Help the user pick a workspace. Respond in the SAME language as the user's message (including Arabic dialects like Egyptian Franco-Arabic "3aml eh" — reply in Egyptian Arabic).
-Return JSON with reply, matchingLocationIds, matchingTags, matchingCities, filterAction (replace|append).`,
+
+FILTER RULES (critical):
+- Set shouldApplyFilters to false for greetings, small talk, thanks, or general questions (e.g. "hello", "hi", "how are you", "what can you do?"). Reply warmly but do NOT change any filters.
+- Set shouldApplyFilters to true ONLY when the user mentions workspace preferences: city, tags, amenities, mood (quiet/loud), "show me", "I want", "find", "looking for", "filter", etc.
+- When shouldApplyFilters is false, return empty arrays for matchingLocationIds, matchingTags, matchingCities and filterAction "replace".
+- When shouldApplyFilters is true and the user wants to see everything / clear filters, set matchingLocationIds to ALL workspace ids.
+- When shouldApplyFilters is true and filtering narrows results, set matchingLocationIds to only the matching ids (never leave it empty unless intentionally clearing — prefer all ids instead).
+
+Return JSON with reply, matchingLocationIds, matchingTags, matchingCities, filterAction (replace|append), shouldApplyFilters (boolean).`,
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
@@ -89,8 +98,9 @@ Return JSON with reply, matchingLocationIds, matchingTags, matchingCities, filte
           matchingTags: { type: Type.ARRAY, items: { type: Type.STRING } },
           matchingCities: { type: Type.ARRAY, items: { type: Type.STRING } },
           filterAction: { type: Type.STRING, enum: ['replace', 'append'] },
+          shouldApplyFilters: { type: Type.BOOLEAN },
         },
-        required: ['reply', 'matchingLocationIds', 'matchingTags', 'matchingCities', 'filterAction'],
+        required: ['reply', 'matchingLocationIds', 'matchingTags', 'matchingCities', 'filterAction', 'shouldApplyFilters'],
       },
     },
   });
@@ -104,6 +114,7 @@ Return JSON with reply, matchingLocationIds, matchingTags, matchingCities, filte
       matchingTags: [],
       matchingCities: [],
       filterAction: 'replace' as const,
+      shouldApplyFilters: false,
     };
   }
 }
