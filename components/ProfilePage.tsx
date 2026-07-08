@@ -9,6 +9,7 @@ import EmailVerificationModal from './EmailVerificationModal';
 import { useAuth } from './AuthProvider';
 import { normalizePhoneDigits } from '../services/phoneVerification';
 import { isEmailVerified, isPhoneVerified } from '../utils/verification';
+import { formatCredits } from '../utils/userProfile';
 import { useImageCropUpload } from './ImageCropPortal';
 
 interface ProfilePageProps {
@@ -266,7 +267,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
                   {formData.role}
                 </span>
                 <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-lg text-[10px] font-black uppercase tracking-widest flex items-center gap-1">
-                  <Sparkles size={12} /> {formData.credits.toLocaleString()} EGP
+                  <Sparkles size={12} /> {formatCredits(formData.credits)} EGP
                 </span>
               </div>
             </div>

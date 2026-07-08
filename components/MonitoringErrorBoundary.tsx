@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLocation } from 'react-router-dom';
 import { reportError } from '../services/firebaseMonitoring';
 
 interface Props {
@@ -44,4 +45,9 @@ export class MonitoringErrorBoundary extends React.Component<Props, State> {
 
     return this.props.children;
   }
+}
+
+export function RouteAwareErrorBoundary({ children }: Props) {
+  const location = useLocation();
+  return <MonitoringErrorBoundary key={location.pathname}>{children}</MonitoringErrorBoundary>;
 }
