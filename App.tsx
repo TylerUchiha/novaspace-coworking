@@ -28,6 +28,7 @@ import {
   buildNetworkPath,
   buildVendorPath,
   defaultTabForRole,
+  isMenuPath,
   isStaticPagePath,
   isValidTabForRole,
   parseNetworkPath,
@@ -483,6 +484,18 @@ const App: React.FC = () => {
       navigate('/login', { replace: true });
     }
   }, [loading, isAuthenticated, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (loading || !isAuthenticated || isStaff) return;
+    if (
+      !isMenuPath(location.pathname) &&
+      !location.pathname.startsWith('/network') &&
+      !isStaticPagePath(location.pathname) &&
+      location.pathname !== '/login'
+    ) {
+      navigate('/menu', { replace: true });
+    }
+  }, [loading, isAuthenticated, isStaff, location.pathname, navigate]);
 
   useEffect(() => {
     if (activeTab === 'analytics') void trackFeatureUsed('analytics_dashboard');
@@ -1467,8 +1480,8 @@ const App: React.FC = () => {
     </Suspense>
   );
 
-  if (isLoggedIn && location.pathname === '/menu' && !isStaff) {
-    const emailVerified = isEmailVerified(userProfile);
+  if (isLoggedIn && location.pathname.replace(/\/+$/, '') === '/menu' && !isStaff) {
+    const emailVerified = isEmailVerified(userProfile, user);
     const phoneVerified = isPhoneVerified(userProfile, user);
     const hasUnverifiedContact = !isContactVerified(userProfile, user);
     const verificationTitle = !emailVerified && !phoneVerified
@@ -1594,7 +1607,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (location.pathname === '/menu/profile' && !isStaff) {
+  if (isLoggedIn && location.pathname.replace(/\/+$/, '') === '/menu/profile' && !isStaff) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col font-['Inter']">
         <div className="p-6">
@@ -1661,15 +1674,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (
-    isLoggedIn &&
-    !isStaff &&
-    location.pathname !== '/menu' &&
-    location.pathname !== '/menu/profile' &&
-    !location.pathname.startsWith('/network') &&
-    !isStaticPagePath(location.pathname)
-  ) {
-    navigate('/menu', { replace: true });
+  if (!isStaff && isMenuPath(location.pathname)) {
     return <PageLoader />;
   }
 
@@ -1706,6 +1711,10 @@ const App: React.FC = () => {
     />
     </Suspense>
     );
+  }
+
+  if (!selectedVendor || !isLocationConfirmed) {
+    return <PageLoader />;
   }
 
   if (location.pathname.startsWith('/network') && selectedVendor && !isLocationConfirmed && !parsedNetwork?.locationId) {

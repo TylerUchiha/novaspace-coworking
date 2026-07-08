@@ -93,7 +93,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   const phoneVerifiedWithAuth = !!formPhoneDigits && formPhoneDigits === authPhoneDigits;
   const needsPhoneVerify = phoneChanged && !phoneVerifiedWithAuth;
   const phoneUnverified = !phoneVerified;
-  const emailVerified = isEmailVerified(formData);
+  const emailVerified = isEmailVerified(formData, firebaseUser);
   const emailNotificationsEnabled = formData.emailNotificationsEnabled !== false;
   const isGoogleSignIn =
     firebaseUser?.providerData.some((p) => p.providerId === 'google.com') ?? false;
@@ -117,6 +117,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   };
 
   const handlePhoneVerified = async (_verifiedE164: string, phoneDigits: string) => {
+    await firebaseUser?.reload();
     const updated = { ...formData, phone: phoneDigits, phoneVerified: true };
     setFormData(updated);
     setShowPhoneVerify(false);
