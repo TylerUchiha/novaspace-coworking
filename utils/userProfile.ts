@@ -8,7 +8,7 @@ export function normalizeUserProfile(
   const credits =
     typeof profile.credits === 'number' && Number.isFinite(profile.credits)
       ? profile.credits
-      : 1000;
+      : 0;
 
   return {
     ...profile,

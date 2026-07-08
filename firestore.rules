@@ -82,7 +82,7 @@ service cloud.firestore {
     }
 
     function isSafeUserProfileCreate() {
-      return incoming().credits == 1000
+      return incoming().credits == 0
         && (!('role' in incoming()) || incoming().role == 'customer');
     }
 

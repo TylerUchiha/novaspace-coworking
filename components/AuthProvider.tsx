@@ -284,7 +284,7 @@ function buildUserProfile(firebaseUser: User, extras?: Partial<UserProfile>): Us
     phone: normalizePhone(extras?.phone),
     phoneVerified: extras?.phoneVerified ?? !!firebaseUser.phoneNumber,
     emailVerified: extras?.emailVerified ?? firebaseUser.emailVerified ?? false,
-    credits: extras?.credits ?? 1000,
+    credits: extras?.credits ?? 0,
     paymentMethods: extras?.paymentMethods ?? [],
     profession: extras?.profession,
     createdAt: extras?.createdAt ?? Date.now(),
