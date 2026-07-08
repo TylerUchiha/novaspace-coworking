@@ -50,11 +50,16 @@ export function parseNetworkPath(pathname: string): {
 } | null {
   const match = pathname.match(/^\/network\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?/);
   if (!match) return null;
-  return {
-    vendorId: decodeURIComponent(match[1]),
-    locationId: match[2] ? decodeURIComponent(match[2]) : undefined,
-    tab: match[3] ? decodeURIComponent(match[3]) : undefined,
-  };
+
+  try {
+    return {
+      vendorId: decodeURIComponent(match[1]),
+      locationId: match[2] ? decodeURIComponent(match[2]) : undefined,
+      tab: match[3] ? decodeURIComponent(match[3]) : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function isStaticPagePath(pathname: string): boolean {
@@ -64,4 +69,9 @@ export function isStaticPagePath(pathname: string): boolean {
 export function isMenuPath(pathname: string): boolean {
   const normalized = pathname.replace(/\/+$/, '') || '/';
   return normalized === '/menu' || normalized.startsWith('/menu/');
+}
+
+export function normalizeAppPath(pathname: string): string {
+  const trimmed = pathname.replace(/\/+$/, '');
+  return trimmed || '/';
 }

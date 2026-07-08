@@ -33,6 +33,7 @@ import {
   loadStaffAccessCode,
   StoredStaffBranch,
 } from '../constants/auth';
+import { normalizeUserProfile } from '../utils/userProfile';
 
 export type AuthRole = 'customer' | 'employee' | 'owner';
 
@@ -254,6 +255,19 @@ function resolveProfileEmailVerified(
   return profile.emailVerified === true || firebaseUser?.emailVerified === true;
 }
 
+function applyProfile(
+  profile: UserProfile,
+  firebaseUser?: User | null,
+): UserProfile {
+  return normalizeUserProfile(
+    {
+      ...profile,
+      emailVerified: resolveProfileEmailVerified(profile, firebaseUser ?? null),
+    },
+    firebaseUser,
+  );
+}
+
 function stripUndefined<T extends Record<string, unknown>>(data: T): T {
   return Object.fromEntries(
     Object.entries(data).filter(([, value]) => value !== undefined)
@@ -280,13 +294,8 @@ function buildUserProfile(firebaseUser: User, extras?: Partial<UserProfile>): Us
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
-    const stored = loadCodeSession();
-    return stored ? buildCodeSessionProfile(stored.role) : null;
-  });
-  const [codeSessionRole, setCodeSessionRole] = useState<CodeSessionRole | null>(
-    () => loadCodeSession()?.role ?? null
-  );
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [codeSessionRole, setCodeSessionRole] = useState<CodeSessionRole | null>(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [profileSyncError, setProfileSyncError] = useState<string | null>(null);
@@ -358,20 +367,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     extras?: Partial<UserProfile>
   ): Promise<UserProfile> => {
     const storedSession = loadCodeSession();
-    if (storedSession?.role === 'owner' || storedSession?.role === 'employee') {
+    if (
+      storedSession &&
+      (storedSession.role === 'owner' || storedSession.role === 'employee') &&
+      !isCodeAuthUid(firebaseUser.uid)
+    ) {
+      clearCodeSession();
+    } else if (
+      storedSession &&
+      (storedSession.role === 'owner' || storedSession.role === 'employee') &&
+      isCodeAuthUid(firebaseUser.uid)
+    ) {
       const profile = buildCodeSessionProfile(storedSession.role);
-      setUserProfile(profile);
+      const normalized = applyProfile(profile, firebaseUser);
+      setUserProfile(normalized);
       setCodeSessionRole(storedSession.role);
-      return profile;
+      return normalized;
     }
 
     if (isCodeAuthUid(firebaseUser.uid)) {
       const role = resolveStaffRoleFromUid(firebaseUser.uid) ?? 'employee';
       const profile = buildStaffProfile(firebaseUser, role);
-      setUserProfile(profile);
+      const normalized = applyProfile(profile, firebaseUser);
+      setUserProfile(normalized);
       setCodeSessionRole(role);
       saveCodeSession(role);
-      return profile;
+      return normalized;
     }
 
     const docRef = doc(db, 'users', firebaseUser.uid);
@@ -387,23 +408,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           emailVerified: rawVerified === true || firebaseUser.emailVerified === true,
         };
         const merged = mergeSignupExtras(existing, extras);
-        const profileToUse = merged !== existing ? merged : existing;
+        const profileToUse = applyProfile(merged !== existing ? merged : existing, firebaseUser);
         if (rawVerified === undefined) {
           await setDoc(docRef, { emailVerified: false }, { merge: true });
-          profileToUse.emailVerified = false;
+          profileToUse.emailVerified = firebaseUser.emailVerified === true;
         }
         if (merged !== existing) {
           await setDoc(docRef, stripUndefined(merged as unknown as Record<string, unknown>), { merge: true });
-          setUserProfile(merged);
+          setUserProfile(profileToUse);
           setProfileSyncError(null);
-          return merged;
+          return profileToUse;
         }
         setUserProfile(profileToUse);
         setProfileSyncError(null);
         return profileToUse;
       }
 
-      const profile = buildUserProfile(firebaseUser, extras);
+      const profile = applyProfile(buildUserProfile(firebaseUser, extras), firebaseUser);
       await setDoc(docRef, profile);
       void trackSignUp(extras?.phone ? 'email' : firebaseUser.providerData[0]?.providerId === 'google.com' ? 'google' : 'email');
       setUserProfile(profile);
@@ -411,7 +432,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return profile;
     } catch (error) {
       console.error('ensureUserProfile failed', error);
-      const fallback = buildUserProfile(firebaseUser, extras);
+      const fallback = applyProfile(buildUserProfile(firebaseUser, extras), firebaseUser);
       setUserProfile(fallback);
       setProfileSyncError(mapFirestoreError(error));
       return fallback;
@@ -425,10 +446,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (!newProfile) return;
 
-    setUserProfile({
-      ...newProfile,
-      emailVerified: resolveProfileEmailVerified(newProfile, user),
-    });
+    setUserProfile(applyProfile(newProfile, user));
 
     if (codeSessionRole || !user) return;
 
@@ -483,18 +501,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const role = claimRole as CodeSessionRole;
           setCodeSessionRole(role);
           saveCodeSession(role);
-          const profile = buildStaffProfile(currentUser, role);
+          const profile = applyProfile(buildStaffProfile(currentUser, role), currentUser);
           setUserProfile(profile);
           setProfileSyncError(null);
-        } else if (storedSession?.role === 'owner' || storedSession?.role === 'employee') {
+        } else if (
+          storedSession &&
+          (storedSession.role === 'owner' || storedSession.role === 'employee') &&
+          isCodeAuthUid(currentUser.uid)
+        ) {
           setCodeSessionRole(storedSession.role);
-          setUserProfile(buildCodeSessionProfile(storedSession.role));
+          setUserProfile(applyProfile(buildCodeSessionProfile(storedSession.role), currentUser));
           setProfileSyncError(null);
-          if (!isCodeAuthUid(currentUser.uid)) {
-            await firebaseSignOut(auth);
-            setUser(null);
-          }
         } else {
+          if (
+            storedSession &&
+            (storedSession.role === 'owner' || storedSession.role === 'employee') &&
+            !isCodeAuthUid(currentUser.uid)
+          ) {
+            clearCodeSession();
+          }
           clearCodeSession();
           setCodeSessionRole(null);
           await ensureUserProfile(currentUser);
@@ -507,24 +532,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (loadCodeSession()) return;
               if (docSnap.exists()) {
                 const data = docSnap.data() as UserProfile;
-                setUserProfile({
-                  ...data,
-                  role: 'customer',
-                  emailVerified: data.emailVerified === true || currentUser.emailVerified === true,
-                });
+                setUserProfile(
+                  applyProfile(
+                    {
+                      ...data,
+                      role: 'customer',
+                    },
+                    currentUser,
+                  ),
+                );
                 setProfileSyncError(null);
               }
             },
             (error) => {
               console.error('Profile subscription error:', error);
               setProfileSyncError(mapFirestoreError(error));
-              setUserProfile(prev => prev ?? buildUserProfile(currentUser));
+              setUserProfile((prev) =>
+                prev ?? applyProfile(buildUserProfile(currentUser), currentUser),
+              );
             }
           );
         }
       } else if (storedSession) {
         setCodeSessionRole(storedSession.role);
-        setUserProfile(buildCodeSessionProfile(storedSession.role));
+        setUserProfile(applyProfile(buildCodeSessionProfile(storedSession.role)));
         setProfileSyncError(null);
       } else {
         setUserProfile(null);
@@ -534,7 +565,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (error) {
         console.error('Auth state handler failed', error);
         if (currentUser) {
-          setUserProfile(prev => prev ?? buildUserProfile(currentUser));
+          setUserProfile((prev) =>
+            prev ?? applyProfile(buildUserProfile(currentUser), currentUser),
+          );
         }
       } finally {
         if (!cancelled) {

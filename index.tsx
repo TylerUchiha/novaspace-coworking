@@ -5,7 +5,7 @@ import './index.css';
 import App from './App';
 import { AuthProvider } from './components/AuthProvider';
 import { RemoteConfigProvider } from './components/RemoteConfigProvider';
-import { MonitoringErrorBoundary } from './components/MonitoringErrorBoundary';
+import { MonitoringErrorBoundary, RouteAwareErrorBoundary } from './components/MonitoringErrorBoundary';
 import { CookieConsentBanner } from './components/CookieConsentBanner';
 
 const rootElement = document.getElementById('root');
@@ -20,7 +20,9 @@ root.render(
       <RemoteConfigProvider>
         <AuthProvider>
           <BrowserRouter>
-            <App />
+            <RouteAwareErrorBoundary>
+              <App />
+            </RouteAwareErrorBoundary>
             <CookieConsentBanner />
           </BrowserRouter>
         </AuthProvider>

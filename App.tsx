@@ -31,9 +31,11 @@ import {
   isMenuPath,
   isStaticPagePath,
   isValidTabForRole,
+  normalizeAppPath,
   parseNetworkPath,
 } from './utils/appRoutes';
 import { isContactVerified, contactVerificationMessage, isEmailVerified, isPhoneVerified } from './utils/verification';
+import { formatCredits } from './utils/userProfile';
 
 const ShiftTimerWidget = lazy(() => import('./components/ShiftTimerWidget'));
 const RoomDetail = lazy(() => import('./components/RoomDetail'));
@@ -89,7 +91,8 @@ const App: React.FC = () => {
   // New: Sub-tab state for configuration
   const [configView, setConfigView] = useState<'layout' | 'brand' | 'branch' | 'tags'>('layout');
 
-  const parsedNetwork = useMemo(() => parseNetworkPath(location.pathname), [location.pathname]);
+  const normalizedPath = normalizeAppPath(location.pathname);
+  const parsedNetwork = useMemo(() => parseNetworkPath(normalizedPath), [normalizedPath]);
   const isCustomerVerified = isContactVerified(userProfile, user);
   const verificationBlockMessage = contactVerificationMessage(userProfile, user);
 
@@ -488,14 +491,14 @@ const App: React.FC = () => {
   useEffect(() => {
     if (loading || !isAuthenticated || isStaff) return;
     if (
-      !isMenuPath(location.pathname) &&
-      !location.pathname.startsWith('/network') &&
-      !isStaticPagePath(location.pathname) &&
-      location.pathname !== '/login'
+      !isMenuPath(normalizedPath) &&
+      !normalizedPath.startsWith('/network') &&
+      !isStaticPagePath(normalizedPath) &&
+      normalizedPath !== '/login'
     ) {
       navigate('/menu', { replace: true });
     }
-  }, [loading, isAuthenticated, isStaff, location.pathname, navigate]);
+  }, [loading, isAuthenticated, isStaff, normalizedPath, navigate]);
 
   useEffect(() => {
     if (activeTab === 'analytics') void trackFeatureUsed('analytics_dashboard');
@@ -1275,7 +1278,7 @@ const App: React.FC = () => {
                     </div>
                     <div>
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Available Balance</p>
-                      <h3 className="text-5xl font-black text-slate-900 tracking-tighter">{userProfile!.credits.toLocaleString()} <span className="text-2xl text-blue-600">EGP</span></h3>
+                      <h3 className="text-5xl font-black text-slate-900 tracking-tighter">{formatCredits(userProfile?.credits)} <span className="text-2xl text-blue-600">EGP</span></h3>
                     </div>
                   </div>
                   
@@ -1480,7 +1483,7 @@ const App: React.FC = () => {
     </Suspense>
   );
 
-  if (isLoggedIn && location.pathname.replace(/\/+$/, '') === '/menu' && !isStaff) {
+  if (isLoggedIn && normalizedPath === '/menu' && !isStaff) {
     const emailVerified = isEmailVerified(userProfile, user);
     const phoneVerified = isPhoneVerified(userProfile, user);
     const hasUnverifiedContact = !isContactVerified(userProfile, user);
@@ -1607,7 +1610,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (isLoggedIn && location.pathname.replace(/\/+$/, '') === '/menu/profile' && !isStaff) {
+  if (isLoggedIn && normalizedPath === '/menu/profile' && !isStaff) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col font-['Inter']">
         <div className="p-6">
@@ -1674,11 +1677,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (!isStaff && isMenuPath(location.pathname)) {
-    return <PageLoader />;
-  }
-
-  if (location.pathname.startsWith('/network') && !selectedVendor && !parsedNetwork?.vendorId) {
+  if (normalizedPath.startsWith('/network') && !selectedVendor && !parsedNetwork?.vendorId) {
     return (
     <Suspense fallback={<PageLoader />}>
     <VendorSelection 
@@ -1804,7 +1803,7 @@ const App: React.FC = () => {
                   <span className="font-black text-sm hidden lg:block">Balance</span>
                 </div>
                 <span className={`hidden lg:block text-[10px] font-black px-2 py-0.5 rounded-lg ${activeTab === 'credits' ? 'bg-white/20' : 'bg-emerald-50 text-emerald-600'}`}>
-                  {userProfile!.credits.toLocaleString()} EGP
+                  {formatCredits(userProfile?.credits)} EGP
                 </span>
               </button>
             </>
