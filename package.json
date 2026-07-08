@@ -17,6 +17,7 @@
     "setup:firestore-backup": "node scripts/setup-firestore-backup.mjs",
     "deploy:rules": "firebase deploy --project refined-legend-420223 --only firestore:ai-studio-novaspacecoworki-863fc540-4213-48e8-8f94-f914c1f6fe77,storage",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
+    "deploy:production": "bash scripts/deploy-production.sh",
     "deploy:auth": "firebase deploy --only auth",
     "connect:domain": "node scripts/connect-custom-domain.mjs",
     "check:domain": "node scripts/check-custom-domain.mjs",
