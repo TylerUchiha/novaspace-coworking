@@ -1,0 +1,4 @@
+{
+  "install": "npm install && npm install --prefix functions",
+  "start": "bash scripts/setup-firebase-credentials.sh || echo 'Firebase credentials not configured yet — add FIREBASE_TOKEN in Cursor Cloud Agents → Secrets.'"
+}
