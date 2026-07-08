@@ -60,3 +60,8 @@ export function parseNetworkPath(pathname: string): {
 export function isStaticPagePath(pathname: string): boolean {
   return ['/privacy', '/terms', '/support', '/api-status'].includes(pathname);
 }
+
+export function isMenuPath(pathname: string): boolean {
+  const normalized = pathname.replace(/\/+$/, '') || '/';
+  return normalized === '/menu' || normalized.startsWith('/menu/');
+}

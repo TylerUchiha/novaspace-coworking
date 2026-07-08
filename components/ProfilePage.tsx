@@ -8,6 +8,7 @@ import PhoneNumberInput from './PhoneNumberInput';
 import EmailVerificationModal from './EmailVerificationModal';
 import { useAuth } from './AuthProvider';
 import { normalizePhoneDigits } from '../services/phoneVerification';
+import { isEmailVerified, isPhoneVerified } from '../utils/verification';
 import { useImageCropUpload } from './ImageCropPortal';
 
 interface ProfilePageProps {
@@ -69,7 +70,16 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   });
 
   useEffect(() => {
-    setFormData(user);
+    setFormData((prev) => {
+      const next = { ...user };
+      if (prev.emailVerified && !user.emailVerified) {
+        next.emailVerified = true;
+      }
+      if (prev.phoneVerified && !user.phoneVerified) {
+        next.phoneVerified = true;
+      }
+      return next;
+    });
     setPaymentMethods(user.paymentMethods || []);
     setShowPhoneVerify(false);
     setPhoneSaveError(null);
@@ -79,10 +89,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   const formPhoneDigits = normalizePhoneDigits(formData.phone);
   const authPhoneDigits = normalizePhoneDigits(firebaseUser?.phoneNumber ?? undefined);
   const phoneChanged = formPhoneDigits !== savedPhoneDigits;
+  const phoneVerified = isPhoneVerified(formData, firebaseUser);
   const phoneVerifiedWithAuth = !!formPhoneDigits && formPhoneDigits === authPhoneDigits;
   const needsPhoneVerify = phoneChanged && !phoneVerifiedWithAuth;
-  const phoneUnverified = !phoneVerifiedWithAuth;
-  const emailVerified = formData.emailVerified === true;
+  const phoneUnverified = !phoneVerified;
+  const emailVerified = isEmailVerified(formData, firebaseUser);
   const emailNotificationsEnabled = formData.emailNotificationsEnabled !== false;
   const isGoogleSignIn =
     firebaseUser?.providerData.some((p) => p.providerId === 'google.com') ?? false;
@@ -92,13 +103,21 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
 
   const handleEmailVerified = async () => {
     await firebaseUser?.reload();
-    setFormData((prev) => ({ ...prev, emailVerified: true }));
+    const updated = { ...formData, emailVerified: true };
+    setFormData(updated);
     setShowEmailVerifyModal(false);
+    onUpdateProfile(updated);
     setShowSuccess(true);
     setTimeout(() => setShowSuccess(false), 3000);
   };
 
+  const openPhoneVerifyModal = () => {
+    setShowPhoneVerify(false);
+    setShowPhoneVerifyModal(true);
+  };
+
   const handlePhoneVerified = async (_verifiedE164: string, phoneDigits: string) => {
+    await firebaseUser?.reload();
     const updated = { ...formData, phone: phoneDigits, phoneVerified: true };
     setFormData(updated);
     setShowPhoneVerify(false);
@@ -299,7 +318,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
             <div className="space-y-1.5">
               <div className="flex items-center justify-between ml-1">
                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Phone Number</label>
-                <VerificationStatusBadge verified={phoneVerifiedWithAuth} />
+                <VerificationStatusBadge verified={phoneVerified} />
               </div>
               <div className={phoneUnverified ? '[&>div>div]:border-red-200 [&>div>div]:bg-red-50/40' : ''}>
                 <PhoneNumberInput
@@ -325,19 +344,20 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
               {phoneUnverified && !needsPhoneVerify && !showPhoneVerifyModal && (
                 <button
                   type="button"
-                  onClick={() => setShowPhoneVerifyModal(true)}
+                  onClick={openPhoneVerifyModal}
                   className="w-full py-2.5 rounded-xl border border-red-200 bg-red-50 text-red-600 font-black text-[10px] uppercase tracking-widest hover:bg-red-100 transition-colors"
                 >
                   Verify Phone Number
                 </button>
               )}
-              {showPhoneVerify && needsPhoneVerify && (
+              {showPhoneVerify && needsPhoneVerify && !showPhoneVerifyModal && (
                 <div className="mt-4 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
                   <p className="text-xs font-bold text-blue-800 mb-4">
                     Verify your new number with a text message to save this change.
                   </p>
                   <PhoneVerificationForm
                     initialPhone={formData.phone || ''}
+                    lockPhone
                     submitLabel="Verify & Save Phone"
                     onVerified={handlePhoneVerified}
                     onCancel={() => setShowPhoneVerify(false)}
@@ -722,6 +742,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
             </div>
             <PhoneVerificationForm
               initialPhone={formData.phone || ''}
+              lockPhone
               submitLabel="Verify Phone"
               onVerified={handlePhoneVerified}
               onCancel={() => setShowPhoneVerifyModal(false)}

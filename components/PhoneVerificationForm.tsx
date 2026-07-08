@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, MessageSquare, Phone, RefreshCw } from 'lucide-react';
 import PhoneNumberInput from './PhoneNumberInput';
 import {
@@ -14,7 +14,7 @@ import {
   sendPhoneVerificationSms,
 } from '../services/phoneVerification';
 
-type Step = 'phone' | 'code';
+type Step = 'phone' | 'send' | 'code';
 
 const RESEND_COOLDOWN_SECONDS = 3 * 60;
 
@@ -24,8 +24,15 @@ function formatResendCooldown(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
+function hasValidLockedPhone(phoneDigits: string): boolean {
+  const parts = parsePhoneNumberParts(phoneDigits);
+  return isValidNationalPhoneNumber(parts.nationalNumber);
+}
+
 interface PhoneVerificationFormProps {
   initialPhone?: string;
+  /** When true, uses the profile phone and only shows a send-code step plus the SMS code field. */
+  lockPhone?: boolean;
   submitLabel?: string;
   onVerified: (verifiedPhoneE164: string, phoneDigits: string) => Promise<void>;
   onCancel?: () => void;
@@ -33,14 +40,17 @@ interface PhoneVerificationFormProps {
 
 const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   initialPhone = '',
+  lockPhone = false,
   submitLabel = 'Verify & Continue',
   onVerified,
   onCancel,
 }) => {
-  const initialParts = parsePhoneNumberParts(initialPhone);
-  const [step, setStep] = useState<Step>('phone');
-  const [countryCode, setCountryCode] = useState(initialParts.countryCode);
-  const [nationalNumber, setNationalNumber] = useState(initialParts.nationalNumber);
+  const phoneLocked = lockPhone && hasValidLockedPhone(initialPhone);
+  const lockedParts = useMemo(() => parsePhoneNumberParts(initialPhone), [initialPhone]);
+
+  const [step, setStep] = useState<Step>(() => (phoneLocked ? 'send' : 'phone'));
+  const [countryCode, setCountryCode] = useState(lockedParts.countryCode);
+  const [nationalNumber, setNationalNumber] = useState(lockedParts.nationalNumber);
   const [phoneDigits, setPhoneDigits] = useState(initialPhone);
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -55,11 +65,25 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!phoneLocked) {
+      const parts = parsePhoneNumberParts(initialPhone);
+      setCountryCode(parts.countryCode);
+      setNationalNumber(parts.nationalNumber);
+      setPhoneDigits(initialPhone);
+      return;
+    }
+
     const parts = parsePhoneNumberParts(initialPhone);
     setCountryCode(parts.countryCode);
     setNationalNumber(parts.nationalNumber);
     setPhoneDigits(initialPhone);
-  }, [initialPhone]);
+    sessionRef.current = null;
+    destroyRecaptcha();
+    setStep('send');
+    setCode('');
+    setError(null);
+    setResendCooldown(0);
+  }, [initialPhone, phoneLocked]);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -68,6 +92,9 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     }, 1000);
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
+
+  const activeCountryCode = phoneLocked ? lockedParts.countryCode : countryCode;
+  const activeNationalNumber = phoneLocked ? lockedParts.nationalNumber : nationalNumber;
 
   const handlePhoneChange = ({ fullDigits, countryCode: nextCountryCode, nationalNumber: nextNational }: {
     fullDigits: string;
@@ -80,16 +107,23 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     setError(null);
   };
 
+  const resolvePhoneE164 = () => {
+    if (phoneE164Ref.current) return phoneE164Ref.current;
+    const phoneE164 = buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
+    phoneE164Ref.current = phoneE164;
+    return phoneE164;
+  };
+
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    if (!isValidNationalPhoneNumber(nationalNumber)) {
+    if (!isValidNationalPhoneNumber(activeNationalNumber)) {
       setError('Please enter a valid phone number.');
       return;
     }
 
-    const phoneE164 = buildPhoneE164FromParts(countryCode, nationalNumber);
+    const phoneE164 = buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
     phoneE164Ref.current = phoneE164;
 
     setIsSending(true);
@@ -117,7 +151,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
     if (!sessionRef.current) {
       setError('Verification session expired. Request a new code.');
-      setStep('phone');
+      setStep(phoneLocked ? 'send' : 'phone');
       return;
     }
 
@@ -135,12 +169,18 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   };
 
   const handleChangeNumber = () => {
+    if (phoneLocked) {
+      onCancel?.();
+      return;
+    }
+
     sessionRef.current = null;
     destroyRecaptcha();
     setStep('phone');
     setCode('');
     setError(null);
     setResendCooldown(0);
+    phoneE164Ref.current = '';
   };
 
   const handleResendCode = async () => {
@@ -149,8 +189,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     setError(null);
     setIsSending(true);
     try {
-      const phoneE164 = phoneE164Ref.current || buildPhoneE164FromParts(countryCode, nationalNumber);
-      phoneE164Ref.current = phoneE164;
+      const phoneE164 = resolvePhoneE164();
       sessionRef.current = await sendPhoneVerificationSms(phoneE164);
       setCode('');
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
@@ -160,6 +199,8 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
       setIsSending(false);
     }
   };
+
+  const displayPhoneE164 = phoneE164Ref.current || buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
 
   return (
     <div className="space-y-5">
@@ -204,18 +245,56 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
             )}
           </button>
         </form>
+      ) : step === 'send' ? (
+        <form onSubmit={handleSendCode} className="space-y-5">
+          <div className="text-center">
+            <p className="text-sm text-slate-500 font-medium">
+              We&apos;ll text a verification code to{' '}
+              <span className="font-bold text-slate-800">{displayPhoneE164}</span>
+            </p>
+            {onCancel && (
+              <button
+                type="button"
+                onClick={onCancel}
+                className="mt-1 text-xs font-bold text-blue-600 hover:text-blue-700"
+              >
+                Edit phone number in profile
+              </button>
+            )}
+          </div>
+
+          {error && <p className="text-sm font-bold text-red-600 text-center">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={isSending}
+            className="w-full flex items-center justify-center gap-2 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSending ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                Sending code...
+              </>
+            ) : (
+              <>
+                <Phone size={18} />
+                Send verification code
+              </>
+            )}
+          </button>
+        </form>
       ) : (
         <form onSubmit={handleConfirmCode} className="space-y-5">
           <div className="text-center">
             <p className="text-sm text-slate-500 font-medium">
-              Enter the code sent to <span className="font-bold text-slate-800">{phoneE164Ref.current}</span>
+              Enter the code sent to <span className="font-bold text-slate-800">{displayPhoneE164}</span>
             </p>
             <button
               type="button"
               onClick={handleChangeNumber}
               className="mt-1 text-xs font-bold text-blue-600 hover:text-blue-700"
             >
-              Change number
+              {phoneLocked ? 'Edit phone number in profile' : 'Change number'}
             </button>
           </div>
 
@@ -283,7 +362,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
         </form>
       )}
 
-      {onCancel && step === 'phone' && (
+      {onCancel && (step === 'phone' || step === 'send') && (
         <div className="text-center">
           <button
             type="button"

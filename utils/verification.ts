@@ -2,8 +2,12 @@ import { User } from 'firebase/auth';
 import { UserProfile } from '../types';
 import { normalizePhoneDigits } from '../services/phoneVerification';
 
-export function isEmailVerified(profile: UserProfile | null | undefined): boolean {
-  return profile?.emailVerified === true;
+export function isEmailVerified(
+  profile: UserProfile | null | undefined,
+  firebaseUser?: User | null,
+): boolean {
+  if (profile?.emailVerified === true) return true;
+  return firebaseUser?.emailVerified === true;
 }
 
 export function isPhoneVerified(
@@ -20,14 +24,14 @@ export function isContactVerified(
   profile: UserProfile | null | undefined,
   firebaseUser: User | null | undefined,
 ): boolean {
-  return isEmailVerified(profile) && isPhoneVerified(profile, firebaseUser);
+  return isEmailVerified(profile, firebaseUser) && isPhoneVerified(profile, firebaseUser);
 }
 
 export function contactVerificationMessage(
   profile: UserProfile | null | undefined,
   firebaseUser: User | null | undefined,
 ): string | null {
-  const emailOk = isEmailVerified(profile);
+  const emailOk = isEmailVerified(profile, firebaseUser);
   const phoneOk = isPhoneVerified(profile, firebaseUser);
   if (emailOk && phoneOk) return null;
   const parts: string[] = [];

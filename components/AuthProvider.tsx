@@ -242,6 +242,18 @@ function mergeSignupExtras(existing: UserProfile, extras?: Partial<UserProfile>)
   return Object.keys(updates).length > 0 ? { ...existing, ...updates } : existing;
 }
 
+function stripClientWritableProfile(profile: UserProfile): Record<string, unknown> {
+  const { emailVerified: _emailVerified, ...writable } = profile;
+  return stripUndefined(writable as unknown as Record<string, unknown>);
+}
+
+function resolveProfileEmailVerified(
+  profile: UserProfile,
+  firebaseUser: User | null | undefined,
+): boolean {
+  return profile.emailVerified === true || firebaseUser?.emailVerified === true;
+}
+
 function stripUndefined<T extends Record<string, unknown>>(data: T): T {
   return Object.fromEntries(
     Object.entries(data).filter(([, value]) => value !== undefined)
@@ -257,7 +269,7 @@ function buildUserProfile(firebaseUser: User, extras?: Partial<UserProfile>): Us
     pfp: extras?.pfp || firebaseUser.photoURL || `https://picsum.photos/400/400?seed=${firebaseUser.uid}`,
     phone: normalizePhone(extras?.phone),
     phoneVerified: extras?.phoneVerified ?? !!firebaseUser.phoneNumber,
-    emailVerified: extras?.emailVerified ?? false,
+    emailVerified: extras?.emailVerified ?? firebaseUser.emailVerified ?? false,
     credits: extras?.credits ?? 1000,
     paymentMethods: extras?.paymentMethods ?? [],
     profession: extras?.profession,
@@ -372,7 +384,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const existing = {
           ...(docSnap.data() as UserProfile),
           role: (firestoreRole === 'owner' || firestoreRole === 'employee' ? firestoreRole : 'customer') as UserProfile['role'],
-          emailVerified: rawVerified === true,
+          emailVerified: rawVerified === true || firebaseUser.emailVerified === true,
         };
         const merged = mergeSignupExtras(existing, extras);
         const profileToUse = merged !== existing ? merged : existing;
@@ -413,13 +425,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (!newProfile) return;
 
-    setUserProfile(newProfile);
+    setUserProfile({
+      ...newProfile,
+      emailVerified: resolveProfileEmailVerified(newProfile, user),
+    });
 
     if (codeSessionRole || !user) return;
 
     try {
       const docRef = doc(db, 'users', user.uid);
-      await setDoc(docRef, stripUndefined(newProfile as unknown as Record<string, unknown>), { merge: true });
+      await setDoc(docRef, stripClientWritableProfile(newProfile), { merge: true });
       setProfileSyncError(null);
     } catch (error) {
       console.error('updateUserProfile failed', error);
@@ -446,6 +461,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
     const unsubscribeAuth = auth.onAuthStateChanged(async (currentUser) => {
+      try {
       setUser(currentUser);
       setMonitoringUserId(currentUser?.uid ?? null);
 
@@ -494,7 +510,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 setUserProfile({
                   ...data,
                   role: 'customer',
-                  emailVerified: data.emailVerified === true,
+                  emailVerified: data.emailVerified === true || currentUser.emailVerified === true,
                 });
                 setProfileSyncError(null);
               }
@@ -515,8 +531,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCodeSessionRole(null);
         setProfileSyncError(null);
       }
-
-      setLoading(false);
+      } catch (error) {
+        console.error('Auth state handler failed', error);
+        if (currentUser) {
+          setUserProfile(prev => prev ?? buildUserProfile(currentUser));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
     });
 
     return () => {

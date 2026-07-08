@@ -28,6 +28,7 @@ import {
   buildNetworkPath,
   buildVendorPath,
   defaultTabForRole,
+  isMenuPath,
   isStaticPagePath,
   isValidTabForRole,
   parseNetworkPath,
@@ -483,6 +484,18 @@ const App: React.FC = () => {
       navigate('/login', { replace: true });
     }
   }, [loading, isAuthenticated, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (loading || !isAuthenticated || isStaff) return;
+    if (
+      !isMenuPath(location.pathname) &&
+      !location.pathname.startsWith('/network') &&
+      !isStaticPagePath(location.pathname) &&
+      location.pathname !== '/login'
+    ) {
+      navigate('/menu', { replace: true });
+    }
+  }, [loading, isAuthenticated, isStaff, location.pathname, navigate]);
 
   useEffect(() => {
     if (activeTab === 'analytics') void trackFeatureUsed('analytics_dashboard');
@@ -1467,10 +1480,15 @@ const App: React.FC = () => {
     </Suspense>
   );
 
-  if (isLoggedIn && location.pathname === '/menu' && !isStaff) {
-    const emailVerified = isEmailVerified(userProfile);
+  if (isLoggedIn && location.pathname.replace(/\/+$/, '') === '/menu' && !isStaff) {
+    const emailVerified = isEmailVerified(userProfile, user);
     const phoneVerified = isPhoneVerified(userProfile, user);
     const hasUnverifiedContact = !isContactVerified(userProfile, user);
+    const verificationTitle = !emailVerified && !phoneVerified
+      ? 'Email and phone verification required'
+      : !emailVerified
+        ? 'Email verification required'
+        : 'Phone verification required';
 
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-['Inter']">
@@ -1490,9 +1508,9 @@ const App: React.FC = () => {
               <div className="flex items-start gap-3">
                 <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={20} />
                 <div>
-                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-1">Verification Required</h3>
+                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest mb-1">{verificationTitle}</h3>
                   <p className="text-slate-500 text-sm font-medium">
-                    Please verify your contact information to book workspaces and secure your account.
+                    {verificationBlockMessage || 'Complete the remaining verification steps to book workspaces and secure your account.'}
                   </p>
                 </div>
               </div>
@@ -1506,10 +1524,25 @@ const App: React.FC = () => {
                     <span className="text-[10px] font-black uppercase tracking-widest text-red-500 shrink-0 ml-2">Unverified</span>
                   </div>
                 )}
+                {emailVerified && (
+                  <div className="flex items-center justify-between p-3 rounded-xl border border-emerald-200 bg-emerald-50/40">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Mail size={16} className="text-emerald-500 shrink-0" />
+                      <span className="text-xs font-bold text-slate-700 truncate">{userProfile?.email || user?.email}</span>
+                    </div>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600 shrink-0 ml-2">Verified</span>
+                  </div>
+                )}
                 {!phoneVerified && (
                   <div className="flex items-center justify-between p-3 rounded-xl border border-red-200 bg-red-50/40">
                     <span className="text-xs font-bold text-slate-700">Phone Number</span>
                     <span className="text-[10px] font-black uppercase tracking-widest text-red-500">Unverified</span>
+                  </div>
+                )}
+                {phoneVerified && (
+                  <div className="flex items-center justify-between p-3 rounded-xl border border-emerald-200 bg-emerald-50/40">
+                    <span className="text-xs font-bold text-slate-700">Phone Number</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-emerald-600">Verified</span>
                   </div>
                 )}
               </div>
@@ -1517,7 +1550,11 @@ const App: React.FC = () => {
                 onClick={() => navigate('/menu/profile')}
                 className="w-full py-3 rounded-xl bg-red-600 text-white font-black text-[10px] uppercase tracking-widest hover:bg-red-700 transition-colors"
               >
-                Verify Contact Information
+                {!emailVerified && !phoneVerified
+                  ? 'Verify Email and Phone'
+                  : !emailVerified
+                    ? 'Verify Email'
+                    : 'Verify Phone'}
               </button>
             </div>
           )}
@@ -1570,7 +1607,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (location.pathname === '/menu/profile' && !isStaff) {
+  if (isLoggedIn && location.pathname.replace(/\/+$/, '') === '/menu/profile' && !isStaff) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col font-['Inter']">
         <div className="p-6">
@@ -1637,15 +1674,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (
-    isLoggedIn &&
-    !isStaff &&
-    location.pathname !== '/menu' &&
-    location.pathname !== '/menu/profile' &&
-    !location.pathname.startsWith('/network') &&
-    !isStaticPagePath(location.pathname)
-  ) {
-    navigate('/menu', { replace: true });
+  if (!isStaff && isMenuPath(location.pathname)) {
     return <PageLoader />;
   }
 
@@ -1682,6 +1711,10 @@ const App: React.FC = () => {
     />
     </Suspense>
     );
+  }
+
+  if (!selectedVendor || !isLocationConfirmed) {
+    return <PageLoader />;
   }
 
   if (location.pathname.startsWith('/network') && selectedVendor && !isLocationConfirmed && !parsedNetwork?.locationId) {
