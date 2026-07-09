@@ -24,20 +24,35 @@ jobs:
           npm ci
           npm ci --prefix functions
 
-      - name: Build app and functions
-        run: |
-          npm run build
-          npm run functions:build
-
-      - name: Deploy to Firebase
+      - name: Resolve deploy credentials
+        id: creds
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          if [ -z "$FIREBASE_TOKEN" ]; then
-            echo "FIREBASE_TOKEN secret is not configured on this repository."
-            exit 1
+          if [ -n "$FIREBASE_TOKEN" ]; then
+            echo "method=token" >> "$GITHUB_OUTPUT"
+          elif [ -n "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "method=service_account" >> "$GITHUB_OUTPUT"
+          else
+            echo "method=none" >> "$GITHUB_OUTPUT"
           fi
-          npx firebase-tools@14 deploy \
-            --project refined-legend-420223 \
-            --token "$FIREBASE_TOKEN" \
-            --non-interactive
+
+      - name: Authenticate with service account
+        if: steps.creds.outputs.method == 'service_account'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      - name: Skip deploy (no credentials)
+        if: steps.creds.outputs.method == 'none'
+        run: |
+          echo "Skipping deploy: set FIREBASE_TOKEN or FIREBASE_SERVICE_ACCOUNT in GitHub repo secrets."
+          echo "Local setup: powershell -File scripts/set-github-firebase-secret.ps1"
+          exit 0
+
+      - name: Deploy to Firebase (production)
+        if: steps.creds.outputs.method != 'none'
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: bash scripts/deploy-production.sh

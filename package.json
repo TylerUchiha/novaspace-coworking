@@ -20,6 +20,7 @@
     "deploy:production": "bash scripts/deploy-production.sh",
     "deploy:cloud": "bash scripts/deploy-production.sh",
     "setup:firebase-credentials": "bash scripts/setup-firebase-credentials.sh",
+    "setup:github-deploy-secret": "powershell -ExecutionPolicy Bypass -File scripts/set-github-firebase-secret.ps1",
     "deploy:auth": "firebase deploy --only auth",
     "connect:domain": "node scripts/connect-custom-domain.mjs",
     "check:domain": "node scripts/check-custom-domain.mjs",
