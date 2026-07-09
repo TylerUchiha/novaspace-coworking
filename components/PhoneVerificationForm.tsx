@@ -7,6 +7,7 @@ import {
   confirmPhoneVerificationCode,
   destroyRecaptcha,
   isLocalhostPhoneAuthBlocked,
+  isPhoneRateLimitError,
   isValidNationalPhoneNumber,
   mapPhoneAuthError,
   normalizePhoneDigits,
@@ -17,6 +18,7 @@ import {
 type Step = 'phone' | 'send' | 'code';
 
 const RESEND_COOLDOWN_SECONDS = 3 * 60;
+const RATE_LIMIT_COOLDOWN_SECONDS = 2 * 60;
 
 function formatResendCooldown(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -24,15 +26,15 @@ function formatResendCooldown(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function hasValidLockedPhone(phoneDigits: string): boolean {
-  const parts = parsePhoneNumberParts(phoneDigits);
-  return isValidNationalPhoneNumber(parts.nationalNumber);
-}
-
 interface PhoneVerificationFormProps {
   initialPhone?: string;
-  /** When true, uses the profile phone and only shows a send-code step plus the SMS code field. */
+  /** When true, never show a phone input — only send/code steps using initialPhone. */
   lockPhone?: boolean;
+  /**
+   * @deprecated Auto-send is disabled — kept for API compatibility. Always treated as false.
+   * Manual "Send verification code" only.
+   */
+  autoSend?: boolean;
   submitLabel?: string;
   onVerified: (verifiedPhoneE164: string, phoneDigits: string) => Promise<void>;
   onCancel?: () => void;
@@ -41,14 +43,22 @@ interface PhoneVerificationFormProps {
 const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   initialPhone = '',
   lockPhone = false,
+  autoSend: _autoSend = false,
   submitLabel = 'Verify & Continue',
   onVerified,
   onCancel,
 }) => {
-  const phoneLocked = lockPhone && hasValidLockedPhone(initialPhone);
-  const lockedParts = useMemo(() => parsePhoneNumberParts(initialPhone), [initialPhone]);
+  // Auto-send intentionally disabled — prevents double SMS / rate limits.
+  void _autoSend;
 
-  const [step, setStep] = useState<Step>(() => (phoneLocked ? 'send' : 'phone'));
+  const lockedParts = useMemo(() => parsePhoneNumberParts(initialPhone), [initialPhone]);
+  const lockedPhoneValid = isValidNationalPhoneNumber(lockedParts.nationalNumber);
+  const normalizedInitialPhone = useMemo(
+    () => normalizePhoneDigits(initialPhone),
+    [initialPhone],
+  );
+
+  const [step, setStep] = useState<Step>(() => (lockPhone ? 'send' : 'phone'));
   const [countryCode, setCountryCode] = useState(lockedParts.countryCode);
   const [nationalNumber, setNationalNumber] = useState(lockedParts.nationalNumber);
   const [phoneDigits, setPhoneDigits] = useState(initialPhone);
@@ -59,31 +69,39 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   const [resendCooldown, setResendCooldown] = useState(0);
   const sessionRef = useRef<PhoneVerificationSession | null>(null);
   const phoneE164Ref = useRef('');
+  const prevPhoneRef = useRef(normalizedInitialPhone);
+  const sendRequestIdRef = useRef(0);
+  const sendInFlightRef = useRef(false);
+
+  // Do not destroy reCAPTCHA on unmount — Strict Mode remounts would kill an in-flight send.
+  // sendPhoneVerificationSms owns create/destroy per attempt.
 
   useEffect(() => {
-    return () => destroyRecaptcha();
-  }, []);
-
-  useEffect(() => {
-    if (!phoneLocked) {
-      const parts = parsePhoneNumberParts(initialPhone);
-      setCountryCode(parts.countryCode);
-      setNationalNumber(parts.nationalNumber);
-      setPhoneDigits(initialPhone);
-      return;
-    }
+    const phoneChanged = prevPhoneRef.current !== normalizedInitialPhone;
+    prevPhoneRef.current = normalizedInitialPhone;
 
     const parts = parsePhoneNumberParts(initialPhone);
     setCountryCode(parts.countryCode);
     setNationalNumber(parts.nationalNumber);
     setPhoneDigits(initialPhone);
-    sessionRef.current = null;
-    destroyRecaptcha();
-    setStep('send');
-    setCode('');
-    setError(null);
-    setResendCooldown(0);
-  }, [initialPhone, phoneLocked]);
+
+    if (phoneChanged) {
+      sendRequestIdRef.current += 1;
+      sendInFlightRef.current = false;
+      sessionRef.current = null;
+      setCode('');
+      setError(null);
+      setResendCooldown(0);
+      setIsSending(false);
+      phoneE164Ref.current = '';
+    }
+
+    if (lockPhone) {
+      setStep('send');
+    } else if (phoneChanged) {
+      setStep('phone');
+    }
+  }, [initialPhone, normalizedInitialPhone, lockPhone]);
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -93,8 +111,9 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
 
-  const activeCountryCode = phoneLocked ? lockedParts.countryCode : countryCode;
-  const activeNationalNumber = phoneLocked ? lockedParts.nationalNumber : nationalNumber;
+  const activeCountryCode = lockPhone ? lockedParts.countryCode : countryCode;
+  const activeNationalNumber = lockPhone ? lockedParts.nationalNumber : nationalNumber;
+  const sendBlocked = isSending || resendCooldown > 0;
 
   const handlePhoneChange = ({ fullDigits, countryCode: nextCountryCode, nationalNumber: nextNational }: {
     fullDigits: string;
@@ -114,8 +133,17 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     return phoneE164;
   };
 
+  const applySendFailure = (err: unknown) => {
+    setError(mapPhoneAuthError(err));
+    if (isPhoneRateLimitError(err)) {
+      setResendCooldown(RATE_LIMIT_COOLDOWN_SECONDS);
+    }
+  };
+
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (sendInFlightRef.current || isSending || resendCooldown > 0) return;
+
     setError(null);
 
     if (!isValidNationalPhoneNumber(activeNationalNumber)) {
@@ -126,16 +154,24 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     const phoneE164 = buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
     phoneE164Ref.current = phoneE164;
 
+    const requestId = ++sendRequestIdRef.current;
+    sendInFlightRef.current = true;
     setIsSending(true);
     try {
-      sessionRef.current = await sendPhoneVerificationSms(phoneE164);
+      const session = await sendPhoneVerificationSms(phoneE164);
+      if (requestId !== sendRequestIdRef.current) return;
+      sessionRef.current = session;
       setStep('code');
       setCode('');
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
-      setError(mapPhoneAuthError(err));
+      if (requestId !== sendRequestIdRef.current) return;
+      applySendFailure(err);
     } finally {
-      setIsSending(false);
+      if (requestId === sendRequestIdRef.current) {
+        sendInFlightRef.current = false;
+        setIsSending(false);
+      }
     }
   };
 
@@ -151,7 +187,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
     if (!sessionRef.current) {
       setError('Verification session expired. Request a new code.');
-      setStep(phoneLocked ? 'send' : 'phone');
+      setStep(lockPhone ? 'send' : 'phone');
       return;
     }
 
@@ -169,11 +205,13 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   };
 
   const handleChangeNumber = () => {
-    if (phoneLocked) {
+    if (lockPhone) {
       onCancel?.();
       return;
     }
 
+    sendRequestIdRef.current += 1;
+    sendInFlightRef.current = false;
     sessionRef.current = null;
     destroyRecaptcha();
     setStep('phone');
@@ -184,23 +222,59 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   };
 
   const handleResendCode = async () => {
-    if (resendCooldown > 0 || isSending) return;
+    if (resendCooldown > 0 || isSending || sendInFlightRef.current) return;
 
     setError(null);
+    const requestId = ++sendRequestIdRef.current;
+    sendInFlightRef.current = true;
     setIsSending(true);
     try {
       const phoneE164 = resolvePhoneE164();
-      sessionRef.current = await sendPhoneVerificationSms(phoneE164);
+      const session = await sendPhoneVerificationSms(phoneE164);
+      if (requestId !== sendRequestIdRef.current) return;
+      sessionRef.current = session;
       setCode('');
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
-      setError(mapPhoneAuthError(err));
+      if (requestId !== sendRequestIdRef.current) return;
+      applySendFailure(err);
     } finally {
-      setIsSending(false);
+      if (requestId === sendRequestIdRef.current) {
+        sendInFlightRef.current = false;
+        setIsSending(false);
+      }
     }
   };
 
   const displayPhoneE164 = phoneE164Ref.current || buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
+
+  // lockPhone must never render a second phone input — only send/code UI.
+  const visibleStep = lockPhone ? (step === 'phone' ? 'send' : step) : step;
+
+  const sendButtonLabel = () => {
+    if (isSending) {
+      return (
+        <>
+          <Loader2 size={18} className="animate-spin" />
+          Sending code...
+        </>
+      );
+    }
+    if (resendCooldown > 0) {
+      return (
+        <>
+          <Phone size={18} />
+          Try again in {formatResendCooldown(resendCooldown)}
+        </>
+      );
+    }
+    return (
+      <>
+        <Phone size={18} />
+        Send verification code
+      </>
+    );
+  };
 
   return (
     <div className="space-y-5">
@@ -212,7 +286,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
         </div>
       )}
 
-      {step === 'phone' ? (
+      {visibleStep === 'phone' ? (
         <form onSubmit={handleSendCode} className="space-y-5">
           <div>
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
@@ -229,23 +303,13 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
           <button
             type="submit"
-            disabled={isSending || !nationalNumber.trim()}
+            disabled={sendBlocked || !nationalNumber.trim()}
             className="w-full flex items-center justify-center gap-2 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isSending ? (
-              <>
-                <Loader2 size={18} className="animate-spin" />
-                Sending code...
-              </>
-            ) : (
-              <>
-                <Phone size={18} />
-                Send verification code
-              </>
-            )}
+            {sendButtonLabel()}
           </button>
         </form>
-      ) : step === 'send' ? (
+      ) : visibleStep === 'send' ? (
         <form onSubmit={handleSendCode} className="space-y-5">
           <div className="text-center">
             <p className="text-sm text-slate-500 font-medium">
@@ -267,20 +331,10 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
           <button
             type="submit"
-            disabled={isSending}
+            disabled={sendBlocked || (lockPhone && !lockedPhoneValid)}
             className="w-full flex items-center justify-center gap-2 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isSending ? (
-              <>
-                <Loader2 size={18} className="animate-spin" />
-                Sending code...
-              </>
-            ) : (
-              <>
-                <Phone size={18} />
-                Send verification code
-              </>
-            )}
+            {sendButtonLabel()}
           </button>
         </form>
       ) : (
@@ -294,7 +348,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
               onClick={handleChangeNumber}
               className="mt-1 text-xs font-bold text-blue-600 hover:text-blue-700"
             >
-              {phoneLocked ? 'Edit phone number in profile' : 'Change number'}
+              {lockPhone ? 'Edit phone number in profile' : 'Change number'}
             </button>
           </div>
 
@@ -318,6 +372,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
                 className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-900 text-center tracking-[0.3em] text-lg placeholder:text-slate-300 placeholder:tracking-normal focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
                 autoFocus
                 required
+                disabled={isSending}
               />
             </div>
           </div>
@@ -327,7 +382,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
           <button
             type="button"
             onClick={() => void handleResendCode()}
-            disabled={isSending || resendCooldown > 0}
+            disabled={sendBlocked}
             className="w-full flex items-center justify-center gap-2 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl font-bold text-sm hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSending ? (
@@ -347,7 +402,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
           <button
             type="submit"
-            disabled={isConfirming || code.length < 6}
+            disabled={isConfirming || code.length < 6 || isSending}
             className="w-full flex items-center justify-center gap-2 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isConfirming ? (
@@ -362,7 +417,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
         </form>
       )}
 
-      {onCancel && (step === 'phone' || step === 'send') && (
+      {onCancel && (
         <div className="text-center">
           <button
             type="button"

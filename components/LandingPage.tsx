@@ -8,7 +8,7 @@ import ForgotPasswordModal from './ForgotPasswordModal';
 import RecaptchaWidget, { RecaptchaWidgetHandle } from './RecaptchaWidget';
 import { useRemoteConfig } from './RemoteConfigProvider';
 import { verifyRecaptchaRemote } from '../services/cloudFunctions';
-import { isRecaptchaRequired } from '../services/recaptcha';
+import { isRecaptchaMisconfigured, isRecaptchaRequired } from '../services/recaptcha';
 
 interface LandingPageProps {
   onCodeLogin: (code: string) => boolean | Promise<boolean>;
@@ -130,6 +130,13 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
   const recaptchaRef = useRef<RecaptchaWidgetHandle>(null);
 
   const verifyRecaptchaChallenge = async (): Promise<boolean> => {
+    if (isRecaptchaMisconfigured()) {
+      setRecaptchaError(
+        'Sign-in is temporarily unavailable: reCAPTCHA is not configured for this build.',
+      );
+      return false;
+    }
+
     if (!isRecaptchaRequired()) {
       return true;
     }

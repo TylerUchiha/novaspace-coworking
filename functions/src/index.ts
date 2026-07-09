@@ -33,6 +33,8 @@ import { createWalkInMember } from './staffMembers';
 import { SUPPORT_EMAIL } from './contact';
 import { submitSupportInquiry } from './supportInquiry';
 import { verifyRecaptcha } from './recaptcha';
+import { onAuthUserDeleted, adminDeleteUser, deleteMyAccount, wipeUserData } from './deleteAccount';
+import { confirmPhoneVerified } from './phoneVerificationConfirm';
 
 if (!getApps().length) {
   initializeApp();
@@ -70,6 +72,11 @@ export {
   createWalkInMember,
   submitSupportInquiry,
   verifyRecaptcha,
+  onAuthUserDeleted,
+  adminDeleteUser,
+  deleteMyAccount,
+  wipeUserData,
+  confirmPhoneVerified,
 };
 
 export const health = onRequest({ cors: true }, async (_req, res) => {

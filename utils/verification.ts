@@ -1,23 +1,20 @@
 import { User } from 'firebase/auth';
 import { UserProfile } from '../types';
-import { normalizePhoneDigits } from '../services/phoneVerification';
 
+/** App-owned: only Firestore profile.emailVerified counts (ignore Auth/Google flag). */
 export function isEmailVerified(
   profile: UserProfile | null | undefined,
-  firebaseUser?: User | null,
+  _firebaseUser?: User | null,
 ): boolean {
-  if (profile?.emailVerified === true) return true;
-  return firebaseUser?.emailVerified === true;
+  return profile?.emailVerified === true;
 }
 
+/** App-owned: only Firestore profile.phoneVerified counts (ignore Auth phoneNumber match). */
 export function isPhoneVerified(
   profile: UserProfile | null | undefined,
-  firebaseUser: User | null | undefined,
+  _firebaseUser?: User | null,
 ): boolean {
-  if (profile?.phoneVerified === true) return true;
-  const authDigits = normalizePhoneDigits(firebaseUser?.phoneNumber ?? undefined);
-  const profileDigits = normalizePhoneDigits(profile?.phone);
-  return !!authDigits && !!profileDigits && authDigits === profileDigits;
+  return profile?.phoneVerified === true;
 }
 
 export function isContactVerified(

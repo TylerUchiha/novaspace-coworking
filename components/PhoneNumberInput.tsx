@@ -76,7 +76,7 @@ const PhoneNumberInput: React.FC<PhoneNumberInputProps> = ({
   };
 
   const handleNationalChange = (raw: string) => {
-    const nextNational = raw.replace(/\D/g, '').slice(0, 12);
+    const nextNational = raw.replace(/\D/g, '').slice(0, 11);
     setNationalNumber(nextNational);
     emitChange(countryCode, nextNational);
   };

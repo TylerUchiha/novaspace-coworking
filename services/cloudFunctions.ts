@@ -247,6 +247,34 @@ export async function verifyRecaptchaRemote(token: string): Promise<{ success: b
   return result.data;
 }
 
+export async function adminDeleteUserRemote(
+  targetUserId: string,
+): Promise<{ success: boolean; targetUserId: string }> {
+  const fn = httpsCallable<{ targetUserId: string }, { success: boolean; targetUserId: string }>(
+    functions,
+    'adminDeleteUser',
+  );
+  const result = await fn({ targetUserId });
+  return result.data;
+}
+
+export async function confirmPhoneVerifiedRemote(
+  phoneDigits: string,
+): Promise<{ success: boolean; phone: string; phoneVerified: true }> {
+  const fn = httpsCallable<
+    { phoneDigits: string },
+    { success: boolean; phone: string; phoneVerified: true }
+  >(functions, 'confirmPhoneVerified');
+  const result = await fn({ phoneDigits });
+  return result.data;
+}
+
+export async function deleteMyAccountRemote(): Promise<{ success: boolean }> {
+  const fn = httpsCallable<void, { success: boolean }>(functions, 'deleteMyAccount');
+  const result = await fn();
+  return result.data;
+}
+
 const FUNCTIONS_PROJECT_ID = 'refined-legend-420223';
 const FUNCTIONS_REGION = 'us-central1';
 

@@ -16,6 +16,8 @@ dist-ssr
 .emulator-data
 .firebase
 functions/.env
+.env.production
+.env.*.local
 
 # Editor directories and files
 .vscode/*

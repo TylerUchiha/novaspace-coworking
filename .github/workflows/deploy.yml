@@ -55,4 +55,7 @@ jobs:
         if: steps.creds.outputs.method != 'none'
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+          VITE_RECAPTCHA_SITE_KEY: ${{ secrets.VITE_RECAPTCHA_SITE_KEY }}
+          VITE_APPCHECK_SITE_KEY: ${{ secrets.VITE_APPCHECK_SITE_KEY }}
+          VITE_FIREBASE_VAPID_KEY: ${{ secrets.VITE_FIREBASE_VAPID_KEY }}
         run: bash scripts/deploy-production.sh

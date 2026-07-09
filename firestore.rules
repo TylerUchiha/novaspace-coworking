@@ -89,7 +89,8 @@ service cloud.firestore {
     function isSafeUserProfileUpdate() {
       return (!('role' in incoming()) || incoming().role == existing().role)
         && (!('credits' in incoming()) || incoming().credits == existing().credits)
-        && (!('emailVerified' in incoming()) || incoming().emailVerified == existing().emailVerified);
+        && (!('emailVerified' in incoming()) || incoming().emailVerified == existing().emailVerified)
+        && (!('phoneVerified' in incoming()) || incoming().phoneVerified == existing().phoneVerified);
     }
 
     function isSafeReservationUpdate() {
@@ -156,7 +157,8 @@ service cloud.firestore {
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.keys().hasAll(['uid', 'name', 'email', 'credits'])
         && isSafeUserProfileCreate()
-        && (!('emailVerified' in incoming()) || incoming().emailVerified == false);
+        && (!('emailVerified' in incoming()) || incoming().emailVerified == false)
+        && (!('phoneVerified' in incoming()) || incoming().phoneVerified == false);
       allow update: if isSignedIn()
         && request.auth.uid == userId
         && request.resource.data.uid == resource.data.uid

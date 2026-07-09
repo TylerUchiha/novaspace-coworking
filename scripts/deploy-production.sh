@@ -30,4 +30,11 @@ echo "==> Deploying Firestore + Storage rules..."
 echo "==> Deploying hosting to novaspace.work..."
 "${FIREBASE_CLI[@]}" deploy "${FB_ARGS[@]}" --only hosting
 
-echo "==> Deploy complete."
+echo "==> Building Cloud Functions..."
+npm --prefix functions run build
+
+echo "==> Deploying Cloud Functions..."
+"${FIREBASE_CLI[@]}" deploy "${FB_ARGS[@]}" --only functions
+
+echo "==> Deploy complete (rules + hosting + functions)."
+echo "Manual (if needed): extension SMTP, Remote Config, phone Auth domains — see README."

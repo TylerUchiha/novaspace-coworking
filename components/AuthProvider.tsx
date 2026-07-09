@@ -16,13 +16,13 @@ import {
   updatePassword as firebaseUpdatePassword,
 } from 'firebase/auth';
 import { FirebaseError } from 'firebase/app';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDocFromServer, setDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
 import { validateAccessCodeRemote } from '../services/cloudFunctions';
 import { setMonitoringUserId } from '../services/firebaseMonitoring';
 import { UserProfile } from '../types';
 import { trackSignUp, trackLogin, setAnalyticsUserId } from '../services/analytics';
-import { unregisterFcmToken } from '../services/fcm';
+import { registerFcmToken, unregisterFcmToken } from '../services/fcm';
 import {
   clearCodeSession,
   CodeSessionRole,
@@ -153,7 +153,7 @@ function mapAuthError(error: unknown): string {
 function mapFirestoreError(error: unknown): string {
   if (error instanceof FirebaseError) {
     if (error.code === 'permission-denied') {
-      return 'Could not access your profile in Firestore. Run: firebase deploy --only firestore:ai-studio-novaspacecoworki-863fc540-4213-48e8-8f94-f914c1f6fe77';
+      return 'Could not sync your profile with Firestore (permission denied). Sign out and sign back in, or contact support if this continues.';
     }
     return error.message;
   }
@@ -244,15 +244,30 @@ function mergeSignupExtras(existing: UserProfile, extras?: Partial<UserProfile>)
 }
 
 function stripClientWritableProfile(profile: UserProfile): Record<string, unknown> {
-  const { emailVerified: _emailVerified, ...writable } = profile;
+  // emailVerified is OTP-server-owned (client rules reject writing true).
+  // phoneVerified is only written true after SMS success — never demote via generic saves.
+  const {
+    emailVerified: _emailVerified,
+    phoneVerified: _phoneVerified,
+    ...writable
+  } = profile;
   return stripUndefined(writable as unknown as Record<string, unknown>);
+}
+
+/** Payload safe for users/{uid} create/update under firestore.rules. */
+function toFirestoreUserWrite(profile: UserProfile): Record<string, unknown> {
+  return {
+    ...stripClientWritableProfile(profile),
+    emailVerified: false,
+  };
 }
 
 function resolveProfileEmailVerified(
   profile: UserProfile,
-  firebaseUser: User | null | undefined,
+  _firebaseUser: User | null | undefined,
 ): boolean {
-  return profile.emailVerified === true || firebaseUser?.emailVerified === true;
+  // App-owned: ignore Auth/Google emailVerified.
+  return profile.emailVerified === true;
 }
 
 function applyProfile(
@@ -282,8 +297,8 @@ function buildUserProfile(firebaseUser: User, extras?: Partial<UserProfile>): Us
     email: firebaseUser.email || extras?.email || '',
     pfp: extras?.pfp || firebaseUser.photoURL || `https://picsum.photos/400/400?seed=${firebaseUser.uid}`,
     phone: normalizePhone(extras?.phone),
-    phoneVerified: extras?.phoneVerified ?? !!firebaseUser.phoneNumber,
-    emailVerified: extras?.emailVerified ?? firebaseUser.emailVerified ?? false,
+    phoneVerified: extras?.phoneVerified ?? false,
+    emailVerified: extras?.emailVerified ?? false,
     credits: extras?.credits ?? 0,
     paymentMethods: extras?.paymentMethods ?? [],
     profession: extras?.profession,
@@ -398,23 +413,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const docRef = doc(db, 'users', firebaseUser.uid);
 
     try {
-      const docSnap = await getDoc(docRef);
+      // Always read from server so a stale local cache cannot hide emailVerified:true.
+      const docSnap = await getDocFromServer(docRef);
       if (docSnap.exists()) {
-        const rawVerified = docSnap.data()?.emailVerified;
-        const firestoreRole = docSnap.data()?.role;
+        const data = docSnap.data() as UserProfile;
+        const rawVerified = data.emailVerified;
+        const firestoreRole = data.role;
         const existing = {
-          ...(docSnap.data() as UserProfile),
+          ...data,
           role: (firestoreRole === 'owner' || firestoreRole === 'employee' ? firestoreRole : 'customer') as UserProfile['role'],
-          emailVerified: rawVerified === true || firebaseUser.emailVerified === true,
+          emailVerified: rawVerified === true,
+          phoneVerified: data.phoneVerified === true,
         };
         const merged = mergeSignupExtras(existing, extras);
         const profileToUse = applyProfile(merged !== existing ? merged : existing, firebaseUser);
-        if (rawVerified === undefined) {
-          await setDoc(docRef, { emailVerified: false }, { merge: true });
-          profileToUse.emailVerified = firebaseUser.emailVerified === true;
-        }
+        // Never write emailVerified/phoneVerified from ensureUserProfile — OTP flows own those flags.
         if (merged !== existing) {
-          await setDoc(docRef, stripUndefined(merged as unknown as Record<string, unknown>), { merge: true });
+          await setDoc(docRef, stripClientWritableProfile(merged), { merge: true });
           setUserProfile(profileToUse);
           setProfileSyncError(null);
           return profileToUse;
@@ -425,7 +440,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const profile = applyProfile(buildUserProfile(firebaseUser, extras), firebaseUser);
-      await setDoc(docRef, profile);
+      await setDoc(docRef, toFirestoreUserWrite(profile));
       void trackSignUp(extras?.phone ? 'email' : firebaseUser.providerData[0]?.providerId === 'google.com' ? 'google' : 'email');
       setUserProfile(profile);
       setProfileSyncError(null);
@@ -446,13 +461,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (!newProfile) return;
 
-    setUserProfile(applyProfile(newProfile, user));
+    // Never demote verified flags in memory once set (OTP / SMS own promotion).
+    const emailVerified =
+      newProfile.emailVerified === true || userProfile?.emailVerified === true;
+    const phoneVerified =
+      newProfile.phoneVerified === true || userProfile?.phoneVerified === true;
+    const withVerified = { ...newProfile, emailVerified, phoneVerified };
+    setUserProfile(applyProfile(withVerified, user));
 
     if (codeSessionRole || !user) return;
 
     try {
       const docRef = doc(db, 'users', user.uid);
-      await setDoc(docRef, stripClientWritableProfile(newProfile), { merge: true });
+      // Never write emailVerified/phoneVerified from the client — Cloud Functions own those flags.
+      await setDoc(docRef, stripClientWritableProfile(withVerified), { merge: true });
       setProfileSyncError(null);
     } catch (error) {
       console.error('updateUserProfile failed', error);
@@ -504,6 +526,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const profile = applyProfile(buildStaffProfile(currentUser, role), currentUser);
           setUserProfile(profile);
           setProfileSyncError(null);
+          // Staff shift reminders — register quietly; no customer push UI in v1.
+          void registerFcmToken(currentUser.uid);
         } else if (
           storedSession &&
           (storedSession.role === 'owner' || storedSession.role === 'employee') &&
@@ -512,6 +536,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setCodeSessionRole(storedSession.role);
           setUserProfile(applyProfile(buildCodeSessionProfile(storedSession.role), currentUser));
           setProfileSyncError(null);
+          void registerFcmToken(currentUser.uid);
         } else {
           if (
             storedSession &&
@@ -528,21 +553,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const docRef = doc(db, 'users', currentUser.uid);
           unsubscribeProfile = onSnapshot(
             docRef,
+            { includeMetadataChanges: true },
             (docSnap) => {
               if (loadCodeSession()) return;
-              if (docSnap.exists()) {
-                const data = docSnap.data() as UserProfile;
-                setUserProfile(
-                  applyProfile(
-                    {
-                      ...data,
-                      role: 'customer',
-                    },
-                    currentUser,
-                  ),
+              if (!docSnap.exists()) return;
+              const data = docSnap.data() as UserProfile;
+              setUserProfile((prev) => {
+                let emailVerified = data.emailVerified === true;
+                let phoneVerified = data.phoneVerified === true;
+                // Cached snapshots can lag behind OTP/SMS server writes — never demote.
+                if (docSnap.metadata.fromCache) {
+                  emailVerified = emailVerified || prev?.emailVerified === true;
+                  phoneVerified = phoneVerified || prev?.phoneVerified === true;
+                }
+                return applyProfile(
+                  {
+                    ...data,
+                    role: 'customer',
+                    emailVerified,
+                    phoneVerified,
+                  },
+                  currentUser,
                 );
-                setProfileSyncError(null);
-              }
+              });
+              setProfileSyncError(null);
             },
             (error) => {
               console.error('Profile subscription error:', error);

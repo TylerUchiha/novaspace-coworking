@@ -19,8 +19,9 @@ export function normalizeUserProfile(
       profile.role === 'owner' || profile.role === 'employee'
         ? profile.role
         : 'customer',
-    emailVerified:
-      profile.emailVerified === true || firebaseUser?.emailVerified === true,
+    // App-owned: never inherit Auth/Google flags.
+    emailVerified: profile.emailVerified === true,
+    phoneVerified: profile.phoneVerified === true,
   };
 }
 

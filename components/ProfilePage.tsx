@@ -7,10 +7,20 @@ import PhoneVerificationForm from './PhoneVerificationForm';
 import PhoneNumberInput from './PhoneNumberInput';
 import EmailVerificationModal from './EmailVerificationModal';
 import { useAuth } from './AuthProvider';
-import { normalizePhoneDigits } from '../services/phoneVerification';
+import {
+  isValidNationalPhoneNumber,
+  normalizePhoneDigits,
+  parsePhoneNumberParts,
+} from '../services/phoneVerification';
 import { isEmailVerified, isPhoneVerified } from '../utils/verification';
 import { formatCredits } from '../utils/userProfile';
 import { useImageCropUpload } from './ImageCropPortal';
+import { doc, getDocFromServer } from 'firebase/firestore';
+import { db } from '../services/firebase';
+import {
+  confirmPhoneVerifiedRemote,
+  deleteMyAccountRemote,
+} from '../services/cloudFunctions';
 
 interface ProfilePageProps {
   user: UserProfile;
@@ -36,14 +46,16 @@ function VerificationStatusBadge({ verified }: { verified: boolean }) {
 }
 
 const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout, onUpdateProfile, onClose }) => {
-  const { user: firebaseUser, updatePassword } = useAuth();
+  const { user: firebaseUser, updatePassword, isCodeSession, codeSessionRole } = useAuth();
   const [formData, setFormData] = useState<UserProfile>(user);
   const [isSaving, setIsSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
-  const [showPhoneVerify, setShowPhoneVerify] = useState(false);
   const [showPhoneVerifyModal, setShowPhoneVerifyModal] = useState(false);
   const [showEmailVerifyModal, setShowEmailVerifyModal] = useState(false);
   const [phoneSaveError, setPhoneSaveError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
   const [passwordData, setPasswordData] = useState({
     currentPassword: '',
     newPassword: '',
@@ -82,18 +94,16 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
       return next;
     });
     setPaymentMethods(user.paymentMethods || []);
-    setShowPhoneVerify(false);
     setPhoneSaveError(null);
   }, [user]);
 
   const savedPhoneDigits = normalizePhoneDigits(user.phone);
   const formPhoneDigits = normalizePhoneDigits(formData.phone);
-  const authPhoneDigits = normalizePhoneDigits(firebaseUser?.phoneNumber ?? undefined);
   const phoneChanged = formPhoneDigits !== savedPhoneDigits;
   const phoneVerified = isPhoneVerified(formData, firebaseUser);
-  const phoneVerifiedWithAuth = !!formPhoneDigits && formPhoneDigits === authPhoneDigits;
-  const needsPhoneVerify = phoneChanged && !phoneVerifiedWithAuth;
   const phoneUnverified = !phoneVerified;
+  const phoneNationalDigits = parsePhoneNumberParts(formData.phone || '').nationalNumber;
+  const canVerifyPhone = isValidNationalPhoneNumber(phoneNationalDigits);
   const emailVerified = isEmailVerified(formData, firebaseUser);
   const emailNotificationsEnabled = formData.emailNotificationsEnabled !== false;
   const isGoogleSignIn =
@@ -104,7 +114,19 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
 
   const handleEmailVerified = async () => {
     await firebaseUser?.reload();
-    const updated = { ...formData, emailVerified: true };
+    // Prefer server truth after OTP — avoid relying only on local form state.
+    let emailVerified = true;
+    if (firebaseUser?.uid) {
+      try {
+        const snap = await getDocFromServer(doc(db, 'users', firebaseUser.uid));
+        if (snap.exists()) {
+          emailVerified = snap.data()?.emailVerified === true;
+        }
+      } catch (err) {
+        console.error('Failed to refresh emailVerified from server', err);
+      }
+    }
+    const updated = { ...formData, emailVerified };
     setFormData(updated);
     setShowEmailVerifyModal(false);
     onUpdateProfile(updated);
@@ -113,20 +135,57 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   };
 
   const openPhoneVerifyModal = () => {
-    setShowPhoneVerify(false);
+    if (!canVerifyPhone) {
+      setPhoneSaveError('Enter a valid phone number before verifying.');
+      return;
+    }
+    setPhoneSaveError(null);
     setShowPhoneVerifyModal(true);
   };
 
   const handlePhoneVerified = async (_verifiedE164: string, phoneDigits: string) => {
-    await firebaseUser?.reload();
-    const updated = { ...formData, phone: phoneDigits, phoneVerified: true };
-    setFormData(updated);
-    setShowPhoneVerify(false);
-    setShowPhoneVerifyModal(false);
-    setPhoneSaveError(null);
-    onUpdateProfile(updated);
-    setShowSuccess(true);
-    setTimeout(() => setShowSuccess(false), 3000);
+    try {
+      await firebaseUser?.reload();
+      // Server owns phoneVerified — confirm Auth phone then write via Cloud Function.
+      const confirmed = await confirmPhoneVerifiedRemote(phoneDigits);
+      const updated = {
+        ...formData,
+        phone: confirmed.phone || phoneDigits,
+        phoneVerified: true,
+      };
+      setFormData(updated);
+      setShowPhoneVerifyModal(false);
+      setPhoneSaveError(null);
+      onUpdateProfile(updated);
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not confirm phone verification.';
+      setPhoneSaveError(message);
+    }
+  };
+
+  const canSelfDelete =
+    !!firebaseUser &&
+    !isCodeSession &&
+    !codeSessionRole &&
+    formData.role !== 'owner' &&
+    formData.role !== 'employee' &&
+    !firebaseUser.uid.startsWith('code-');
+
+  const handleDeleteAccount = async () => {
+    setDeleteAccountError(null);
+    setIsDeletingAccount(true);
+    try {
+      await deleteMyAccountRemote();
+      setShowDeleteConfirm(false);
+      onLogout();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not delete account.';
+      setDeleteAccountError(message);
+    } finally {
+      setIsDeletingAccount(false);
+    }
   };
 
   const handleToggleEmailNotifications = () => {
@@ -137,9 +196,11 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   };
 
   const handleSave = () => {
-    if (needsPhoneVerify) {
+    if (phoneChanged && !phoneVerified) {
       setPhoneSaveError('Verify your new phone number via SMS before saving.');
-      setShowPhoneVerify(true);
+      if (canVerifyPhone) {
+        setShowPhoneVerifyModal(true);
+      }
       return;
     }
 
@@ -149,7 +210,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
       onUpdateProfile({
         ...formData,
         paymentMethods,
-        phoneVerified: phoneVerifiedWithAuth || formData.phoneVerified,
+        phoneVerified: formData.phoneVerified === true,
       });
       setIsSaving(false);
       setShowSuccess(true);
@@ -325,15 +386,8 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
                 <PhoneNumberInput
                   value={formData.phone || ''}
                   onChange={({ fullDigits }) => {
-                    if (fullDigits.length <= 15) {
-                      setFormData(prev => ({ ...prev, phone: fullDigits, phoneVerified: false }));
-                      setPhoneSaveError(null);
-                      if (fullDigits !== savedPhoneDigits) {
-                        setShowPhoneVerify(true);
-                      } else {
-                        setShowPhoneVerify(false);
-                      }
-                    }
+                    setFormData((prev) => ({ ...prev, phone: fullDigits, phoneVerified: false }));
+                    setPhoneSaveError(null);
                   }}
                   compact
                   showHint={false}
@@ -342,28 +396,15 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
               {phoneSaveError && (
                 <p className="text-xs font-bold text-red-600 ml-1">{phoneSaveError}</p>
               )}
-              {phoneUnverified && !needsPhoneVerify && !showPhoneVerifyModal && (
+              {phoneUnverified && !showPhoneVerifyModal && (
                 <button
                   type="button"
                   onClick={openPhoneVerifyModal}
-                  className="w-full py-2.5 rounded-xl border border-red-200 bg-red-50 text-red-600 font-black text-[10px] uppercase tracking-widest hover:bg-red-100 transition-colors"
+                  disabled={!canVerifyPhone}
+                  className="w-full py-2.5 rounded-xl border border-red-200 bg-red-50 text-red-600 font-black text-[10px] uppercase tracking-widest hover:bg-red-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Verify Phone Number
                 </button>
-              )}
-              {showPhoneVerify && needsPhoneVerify && !showPhoneVerifyModal && (
-                <div className="mt-4 p-4 bg-blue-50 border border-blue-100 rounded-2xl">
-                  <p className="text-xs font-bold text-blue-800 mb-4">
-                    Verify your new number with a text message to save this change.
-                  </p>
-                  <PhoneVerificationForm
-                    initialPhone={formData.phone || ''}
-                    lockPhone
-                    submitLabel="Verify & Save Phone"
-                    onVerified={handlePhoneVerified}
-                    onCancel={() => setShowPhoneVerify(false)}
-                  />
-                </div>
               )}
             </div>
 
@@ -626,6 +667,31 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
           </div>
         </div>
 
+        {canSelfDelete && (
+          <div className="bg-white rounded-[2rem] border border-rose-200 p-8 shadow-sm">
+            <h3 className="text-xl font-black text-slate-900 tracking-tight mb-2 flex items-center gap-3">
+              <Trash2 className="text-rose-500" size={24} />
+              Delete account
+            </h3>
+            <p className="text-sm font-medium text-slate-500 mb-6">
+              Permanently delete your Nova Space account, profile, and related data. This cannot be undone.
+            </p>
+            {deleteAccountError && (
+              <p className="mb-4 text-sm font-bold text-rose-600">{deleteAccountError}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteAccountError(null);
+                setShowDeleteConfirm(true);
+              }}
+              className="px-6 py-3 bg-rose-50 text-rose-600 border border-rose-200 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-rose-100 transition-all"
+            >
+              Delete my account
+            </button>
+          </div>
+        )}
+
         {showPasswordSection && (
           <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
             <h3 className="text-xl font-black text-slate-900 tracking-tight mb-8 flex items-center gap-3">
@@ -741,13 +807,52 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
                 Confirm your phone number with a text message to secure your account.
               </p>
             </div>
+            {phoneSaveError && (
+              <p className="mb-4 text-sm font-bold text-rose-600 text-center">{phoneSaveError}</p>
+            )}
             <PhoneVerificationForm
+              key={normalizePhoneDigits(formData.phone || '') || 'empty-phone'}
               initialPhone={formData.phone || ''}
               lockPhone
+              autoSend={false}
               submitLabel="Verify Phone"
               onVerified={handlePhoneVerified}
               onCancel={() => setShowPhoneVerifyModal(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-white rounded-[2rem] border border-slate-200 shadow-2xl p-8">
+            <h2 className="text-2xl font-black text-slate-900 tracking-tight mb-3">
+              Delete your account?
+            </h2>
+            <p className="text-slate-500 font-medium text-sm leading-relaxed mb-6">
+              This permanently removes your profile and signs you out. Active bookings may be anonymized. This cannot be undone.
+            </p>
+            {deleteAccountError && (
+              <p className="mb-4 text-sm font-bold text-rose-600">{deleteAccountError}</p>
+            )}
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                disabled={isDeletingAccount}
+                onClick={() => setShowDeleteConfirm(false)}
+                className="px-6 py-3 bg-white border border-slate-200 text-slate-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-slate-50 transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingAccount}
+                onClick={() => void handleDeleteAccount()}
+                className="px-6 py-3 bg-rose-600 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-rose-700 transition-all disabled:opacity-50"
+              >
+                {isDeletingAccount ? 'Deleting…' : 'Delete forever'}
+              </button>
+            </div>
           </div>
         </div>
       )}

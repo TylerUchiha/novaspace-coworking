@@ -13,6 +13,8 @@ import { auth } from './firebase';
 let recaptchaVerifier: RecaptchaVerifier | null = null;
 let recaptchaContainer: HTMLDivElement | null = null;
 let recaptchaRenderPromise: Promise<RecaptchaVerifier> | null = null;
+/** Bumped on destroy so in-flight render() results are discarded. */
+let recaptchaGeneration = 0;
 
 /** Enable fictional test numbers from Firebase Console (dev only). */
 if (import.meta.env.DEV && import.meta.env.VITE_PHONE_AUTH_TEST_MODE === 'true') {
@@ -164,7 +166,7 @@ export function mapPhoneAuthError(error: unknown): string {
       case 'auth/code-expired':
         return 'Verification code expired.';
       case 'auth/too-many-requests':
-        return 'Security check is refreshing. Please try sending the code again.';
+        return 'Too many verification attempts. Wait for the cooldown, then tap Send again.';
       case 'auth/credential-already-in-use':
         return 'This phone number is already linked to another account.';
       case 'auth/provider-already-linked':
@@ -205,6 +207,7 @@ function removeRecaptchaContainer(): void {
 }
 
 export function destroyRecaptcha(): void {
+  recaptchaGeneration += 1;
   if (recaptchaVerifier) {
     try {
       recaptchaVerifier.clear();
@@ -226,6 +229,8 @@ export async function getRecaptchaVerifier(): Promise<RecaptchaVerifier> {
     return recaptchaRenderPromise;
   }
 
+  const generationAtStart = recaptchaGeneration;
+
   recaptchaRenderPromise = (async () => {
     if (!recaptchaContainer) {
       recaptchaContainer = document.createElement('div');
@@ -244,6 +249,16 @@ export async function getRecaptchaVerifier(): Promise<RecaptchaVerifier> {
       size: 'invisible',
     });
     await verifier.render();
+
+    if (generationAtStart !== recaptchaGeneration) {
+      try {
+        verifier.clear();
+      } catch {
+        // Stale widget after destroy — ignore.
+      }
+      throw new FirebaseError('auth/captcha-check-failed', 'reCAPTCHA was reset during render');
+    }
+
     recaptchaVerifier = verifier;
     return verifier;
   })();
@@ -251,17 +266,25 @@ export async function getRecaptchaVerifier(): Promise<RecaptchaVerifier> {
   try {
     return await recaptchaRenderPromise;
   } catch (error) {
-    destroyRecaptcha();
+    if (generationAtStart === recaptchaGeneration) {
+      destroyRecaptcha();
+    }
     throw error;
   } finally {
-    recaptchaRenderPromise = null;
+    if (recaptchaRenderPromise) {
+      recaptchaRenderPromise = null;
+    }
   }
+}
+
+export function isPhoneRateLimitError(error: unknown): boolean {
+  return error instanceof FirebaseError && error.code === 'auth/too-many-requests';
 }
 
 function isRetryablePhoneAuthError(error: unknown): boolean {
   if (!(error instanceof FirebaseError)) return false;
+  // Never auto-retry too-many-requests — that worsens Firebase rate limits.
   return [
-    'auth/too-many-requests',
     'auth/captcha-check-failed',
     'auth/invalid-app-credential',
     'auth/invalid-app-credentials',
@@ -270,6 +293,13 @@ function isRetryablePhoneAuthError(error: unknown): boolean {
 
 async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Always start from a clean invisible reCAPTCHA for each SMS send. */
+async function getFreshRecaptchaVerifier(): Promise<RecaptchaVerifier> {
+  destroyRecaptcha();
+  await wait(300);
+  return getRecaptchaVerifier();
 }
 
 export async function sendPhoneVerificationSms(
@@ -285,7 +315,7 @@ export async function sendPhoneVerificationSms(
     throw new FirebaseError('auth/invalid-app-credential', 'Phone auth blocked on localhost');
   }
 
-  const verifier = await getRecaptchaVerifier();
+  const verifier = await getFreshRecaptchaVerifier();
 
   try {
     if (currentUser.phoneNumber) {
@@ -302,8 +332,11 @@ export async function sendPhoneVerificationSms(
         linkError instanceof FirebaseError &&
         linkError.code === 'auth/provider-already-linked'
       ) {
+        destroyRecaptcha();
+        await wait(400);
+        const updateVerifier = await getFreshRecaptchaVerifier();
         const provider = new PhoneAuthProvider(auth);
-        const verificationId = await provider.verifyPhoneNumber(phoneE164, verifier);
+        const verificationId = await provider.verifyPhoneNumber(phoneE164, updateVerifier);
         return { type: 'update', verificationId };
       }
       throw linkError;
@@ -311,7 +344,7 @@ export async function sendPhoneVerificationSms(
   } catch (error) {
     if (retryAttempt < 1 && isRetryablePhoneAuthError(error)) {
       destroyRecaptcha();
-      await wait(1200);
+      await wait(2000);
       return sendPhoneVerificationSms(phoneE164, retryAttempt + 1);
     }
     destroyRecaptcha();

@@ -53,7 +53,14 @@ if setup_service_account; then
   exit 1
 fi
 
-echo "No Firebase credentials in this cloud environment."
+# Fall through to interactive/local Firebase CLI login (developer machines).
+if verify_firebase_auth; then
+  echo "Using existing Firebase CLI credentials for project $PROJECT_ID."
+  exit 0
+fi
+
+echo "No Firebase credentials in this environment."
 echo "Add FIREBASE_TOKEN (recommended) to Cursor Cloud Agents → Secrets, then restart the agent."
-echo "Generate a token locally with: firebase login:ci"
+echo "Or run locally: firebase login"
+echo "Generate a CI token with: firebase login:ci"
 exit 1

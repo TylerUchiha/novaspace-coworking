@@ -17,7 +17,13 @@ export function getRecaptchaSiteKey(): string | undefined {
   return key?.trim() || undefined;
 }
 
+/** Production builds require a site key — never silently skip login protection. */
+export function isRecaptchaMisconfigured(): boolean {
+  return Boolean(import.meta.env.PROD) && !getRecaptchaSiteKey();
+}
+
 export function isRecaptchaRequired(): boolean {
+  if (isRecaptchaMisconfigured()) return true;
   return Boolean(getRecaptchaSiteKey());
 }
 

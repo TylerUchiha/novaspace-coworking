@@ -76,11 +76,14 @@ export const createBooking = onCall({ cors: true }, async (request) => {
   if (!actingStaff) {
     const userRef = db.collection('users').doc(request.auth.uid);
     const selfSnap = await userRef.get();
+    if (!selfSnap.exists) {
+      throw new HttpsError('failed-precondition', 'Complete your profile before booking.');
+    }
     const selfData = selfSnap.data();
-    if (selfSnap.exists && selfData?.emailVerified !== true) {
+    if (selfData?.emailVerified !== true) {
       throw new HttpsError('failed-precondition', 'Verify your email before booking.');
     }
-    if (selfSnap.exists && selfData?.phoneVerified !== true) {
+    if (selfData?.phoneVerified !== true) {
       throw new HttpsError('failed-precondition', 'Verify your phone number before booking.');
     }
   }
