@@ -72,7 +72,7 @@ export {
   verifyRecaptcha,
 };
 
-export const health = onRequest(async (_req, res) => {
+export const health = onRequest({ cors: true }, async (_req, res) => {
   res.json({
     status: 'ok',
     service: 'novaspace-functions',

@@ -247,5 +247,10 @@ export async function verifyRecaptchaRemote(token: string): Promise<{ success: b
   return result.data;
 }
 
+const FUNCTIONS_PROJECT_ID = 'refined-legend-420223';
+const FUNCTIONS_REGION = 'us-central1';
+
 export const functionsHealthUrl =
-  'https://us-central1-refined-legend-420223.cloudfunctions.net/health';
+  import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true'
+    ? `http://127.0.0.1:5001/${FUNCTIONS_PROJECT_ID}/${FUNCTIONS_REGION}/health`
+    : `https://${FUNCTIONS_REGION}-${FUNCTIONS_PROJECT_ID}.cloudfunctions.net/health`;
