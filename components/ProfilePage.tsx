@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Reservation, UserProfile } from '../types';
-import { User, Mail, Sparkles, Camera, Check, Lock, CreditCard, Plus, Trash2, LogOut, X, Edit2, Briefcase, ShieldCheck, Bell } from 'lucide-react';
+import { User, Mail, Sparkles, Camera, Check, Lock, CreditCard, Plus, Trash2, LogOut, X, Edit2, Briefcase, ShieldCheck, Bell, Cookie } from 'lucide-react';
 import { UserAvatar } from './UserAvatar';
 import PhoneVerificationForm from './PhoneVerificationForm';
 import PhoneNumberInput from './PhoneNumberInput';
@@ -21,6 +21,12 @@ import {
   confirmPhoneVerifiedRemote,
   deleteMyAccountRemote,
 } from '../services/cloudFunctions';
+import {
+  getAnalyticsConsent,
+  setAnalyticsConsent,
+  type AnalyticsConsent,
+} from '../utils/analyticsConsent';
+import { initFirebaseMonitoring } from '../services/firebaseMonitoring';
 
 interface ProfilePageProps {
   user: UserProfile;
@@ -56,6 +62,7 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [deleteAccountError, setDeleteAccountError] = useState<string | null>(null);
+  const [analyticsConsent, setAnalyticsConsentState] = useState<AnalyticsConsent>(null);
   const [passwordData, setPasswordData] = useState({
     currentPassword: '',
     newPassword: '',
@@ -96,6 +103,21 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
     setPaymentMethods(user.paymentMethods || []);
     setPhoneSaveError(null);
   }, [user]);
+
+  useEffect(() => {
+    setAnalyticsConsentState(getAnalyticsConsent());
+    const onConsentChanged = () => setAnalyticsConsentState(getAnalyticsConsent());
+    window.addEventListener('novaspace:consent-changed', onConsentChanged);
+    return () => window.removeEventListener('novaspace:consent-changed', onConsentChanged);
+  }, []);
+
+  const handleAnalyticsConsentChange = (value: 'accepted' | 'rejected') => {
+    setAnalyticsConsent(value);
+    setAnalyticsConsentState(value);
+    if (value === 'accepted') {
+      void initFirebaseMonitoring();
+    }
+  };
 
   const savedPhoneDigits = normalizePhoneDigits(user.phone);
   const formPhoneDigits = normalizePhoneDigits(formData.phone);
@@ -498,6 +520,47 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
           </div>
           <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
             {emailNotificationsEnabled ? 'Enabled' : 'Disabled'}
+          </p>
+        </div>
+
+        <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
+          <div className="flex items-center justify-between gap-6 mb-2">
+            <div>
+              <h3 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-3">
+                <Cookie className="text-amber-500" size={24} />
+                Privacy preferences
+              </h3>
+              <p className="text-sm font-medium text-slate-500 mt-2">
+                Essential cookies always run for sign-in and security. Analytics and Crashlytics only run if you accept.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={analyticsConsent === 'accepted'}
+              onClick={() =>
+                handleAnalyticsConsentChange(
+                  analyticsConsent === 'accepted' ? 'rejected' : 'accepted',
+                )
+              }
+              className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full transition-colors ${
+                analyticsConsent === 'accepted' ? 'bg-blue-600' : 'bg-slate-200'
+              }`}
+            >
+              <span
+                className={`inline-block h-6 w-6 transform rounded-full bg-white shadow transition-transform ${
+                  analyticsConsent === 'accepted' ? 'translate-x-7' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+            Analytics:{' '}
+            {analyticsConsent === 'accepted'
+              ? 'On'
+              : analyticsConsent === 'rejected'
+                ? 'Off (essential only)'
+                : 'Not set'}
           </p>
         </div>
 

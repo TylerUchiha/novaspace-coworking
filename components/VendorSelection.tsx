@@ -415,10 +415,26 @@ const VendorSelection: React.FC<VendorSelectionProps> = ({
               <div className="w-24 h-24 bg-white rounded-[2.5rem] shadow-xl border border-slate-100 flex items-center justify-center mb-8 text-slate-200">
                 <Inbox size={48} />
               </div>
-              <h3 className="text-3xl font-black text-slate-900 tracking-tight mb-3">No matching workspaces found</h3>
+              <h3 className="text-3xl font-black text-slate-900 tracking-tight mb-3">
+                {vendors.length === 0 ? 'Catalog not configured' : 'No matching workspaces found'}
+              </h3>
               <p className="text-slate-500 font-medium max-w-sm mb-8">
-                We couldn't find any locations matching your current filters.
+                {vendors.length === 0
+                  ? userRole === 'owner'
+                    ? 'No networks in Firestore yet. Create a space, then add branches, rooms, and menus in Property Config.'
+                    : 'Workspaces are not available yet. Please check back soon.'
+                  : "We couldn't find any locations matching your current filters."}
               </p>
+              {vendors.length === 0 && userRole === 'owner' && onCreateSpace ? (
+                <button
+                  type="button"
+                  onClick={onCreateSpace}
+                  className="mt-2 px-8 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm hover:bg-blue-700 transition-colors shadow-xl"
+                >
+                  Create New Space
+                </button>
+              ) : null}
+              {vendors.length > 0 ? (
               <button 
                 onClick={() => {
                   setSearchQuery('');
@@ -428,6 +444,7 @@ const VendorSelection: React.FC<VendorSelectionProps> = ({
               >
                 Clear Search
               </button>
+              ) : null}
             </div>
           )}
 

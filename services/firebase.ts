@@ -46,6 +46,10 @@ if (typeof window !== 'undefined' && appCheckSiteKey) {
     provider: new ReCaptchaV3Provider(appCheckSiteKey),
     isTokenAutoRefreshEnabled: true,
   });
+} else if (typeof window !== 'undefined' && import.meta.env.PROD) {
+  console.info(
+    '[Nova Space] App Check inactive (VITE_APPCHECK_SITE_KEY unset). Fail-soft: app runs without App Check tokens. Use Firebase Console Monitor mode before Enforce.',
+  );
 }
 
 export enum OperationType {

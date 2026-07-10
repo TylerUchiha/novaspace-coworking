@@ -125,17 +125,29 @@ export const createBooking = onCall({ cors: true }, async (request) => {
   const newStart = timeToMinutes(time);
   const newEnd = newStart + duration * 60;
 
-  if (rooms.length > 0) {
-    const conflictSnap = await db
-      .collection('reservations')
-      .where('locationId', '==', locationId)
-      .where('date', '==', date)
-      .get();
+  const now = Date.now();
+  const status =
+    autoApprove || actingStaff ? 'approved' : rooms.length === 0 ? 'approved' : 'pending';
 
+  let reservationIds: string[] = [];
+
+  await db.runTransaction(async (txn) => {
+    // All reads must happen before writes. On contention Firestore retries this
+    // callback, so rebuild IDs each attempt to avoid duplicates from a prior try.
+    const ids: string[] = [];
+
+    // Conflict check inside the transaction so concurrent bookings cannot both
+    // pass a stale pre-read and double-book the same room/time.
     for (const room of rooms) {
+      const conflictQuery = db
+        .collection('reservations')
+        .where('roomId', '==', room.id)
+        .where('date', '==', date);
+      const conflictSnap = await txn.get(conflictQuery);
       for (const docSnap of conflictSnap.docs) {
         const res = docSnap.data();
-        if (res.roomId !== room.id || res.status === 'declined') continue;
+        // Room IDs are not guaranteed globally unique across locations.
+        if (res.locationId !== locationId || res.status === 'declined') continue;
         const resStart = timeToMinutes(res.time as string);
         const resEnd = resStart + (res.duration as number) * 60;
         if (Math.max(newStart, resStart) < Math.min(newEnd, resEnd)) {
@@ -146,15 +158,7 @@ export const createBooking = onCall({ cors: true }, async (request) => {
         }
       }
     }
-  }
 
-  const now = Date.now();
-  const status =
-    autoApprove || actingStaff ? 'approved' : rooms.length === 0 ? 'approved' : 'pending';
-
-  const reservationIds: string[] = [];
-
-  await db.runTransaction(async (txn) => {
     let balanceAfter = (userData?.credits as number) ?? 0;
 
     if (paymentMethod === 'credits' && totalPrice > 0) {
@@ -168,8 +172,8 @@ export const createBooking = onCall({ cors: true }, async (request) => {
     }
 
     if (rooms.length === 0) {
-      const id = `res-${now}-takeaway`;
-      reservationIds.push(id);
+      const id = db.collection('reservations').doc().id;
+      ids.push(id);
       txn.set(db.collection('reservations').doc(id), {
         id,
         userId,
@@ -203,13 +207,14 @@ export const createBooking = onCall({ cors: true }, async (request) => {
           balanceAfter,
         });
       }
+      reservationIds = ids;
       return;
     }
 
     const pricePerRoom = totalPrice / rooms.length;
     for (const room of rooms) {
-      const id = `res-${now}-${room.id}`;
-      reservationIds.push(id);
+      const id = db.collection('reservations').doc().id;
+      ids.push(id);
       txn.set(db.collection('reservations').doc(id), {
         id,
         userId,
@@ -242,15 +247,17 @@ export const createBooking = onCall({ cors: true }, async (request) => {
         amount: totalPrice,
         description,
         category: 'booking',
-        reservationId: reservationIds[0],
+        reservationId: ids[0],
         paymentMethod,
         balanceAfter,
         metadata: {
-          reservationIds,
+          reservationIds: ids,
           rooms: rooms.map((r) => ({ id: r.id, name: r.name })),
         },
       });
     }
+
+    reservationIds = ids;
   });
 
   return { reservationIds, totalPrice, status };

@@ -3,7 +3,8 @@ import React, { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspens
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Room, RoomStatus, Reservation, UserProfile, Vendor, Floor, LocationData, Employee, CreditTransaction } from './types';
-import { LOCATIONS, ROOM_COLORS, VENDORS } from './constants';
+import { ROOM_COLORS } from './constants';
+import { imageOrPlaceholder } from './utils/mediaPlaceholders';
 import { Building2, Map as MapIcon, MapPin, LogOut, ShieldCheck, Settings, Eye, X, Plus, User, Check, Mail, ChevronLeft, Globe, Calendar, Wallet, Coins, Utensils, ShoppingCart, BarChart3, AlertCircle, Clock, KeyRound, Ban, Star } from 'lucide-react';
 
 import { useAuth } from './components/AuthProvider';
@@ -82,7 +83,7 @@ const App: React.FC = () => {
   const isLoggedIn = isAuthenticated;
   const userRole = (codeSessionRole ?? (userProfile?.role as 'customer' | 'employee' | 'owner' | undefined)) || null;
   const isStaff = userRole === 'employee' || userRole === 'owner';
-  const [allVendors, setAllVendors] = useState<Vendor[]>(VENDORS);
+  const [allVendors, setAllVendors] = useState<Vendor[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
   const [isLocationConfirmed, setIsLocationConfirmed] = useState(false);
@@ -128,7 +129,7 @@ const App: React.FC = () => {
 
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
 
-  const [allLocations, setAllLocations] = useState<LocationData[]>(LOCATIONS);
+  const [allLocations, setAllLocations] = useState<LocationData[]>([]);
   const [allReservations, setAllReservations] = useState<Reservation[]>([]);
   const pendingLocationsRef = useRef<Map<string, LocationData>>(new Map());
   const editingStaffCodeLocRef = useRef<string | null>(null);
@@ -193,12 +194,13 @@ const App: React.FC = () => {
     void (async () => {
       await ensureCatalogSeeded();
       unsubVendors = subscribeVendors((vendors) => {
-        if (vendors.length > 0) setAllVendors(vendors);
+        setAllVendors(vendors);
         setCatalogLoading(false);
       });
       unsubLocations = subscribeLocations((locations) => {
-        if (locations.length === 0) return;
-        setAllLocations((prev) => mergeLocationsFromRemote(locations, prev));
+        setAllLocations((prev) =>
+          locations.length === 0 ? [] : mergeLocationsFromRemote(locations, prev),
+        );
       });
     })();
 
@@ -770,11 +772,6 @@ const App: React.FC = () => {
   const handleAddLocation = async () => {
     if (!selectedVendor) return;
     const newId = `loc-${Date.now()}`;
-    const catId = `cat-new-loc-${Date.now()}`;
-    const categoryName = 'Branch Specialty Feed';
-    const price1 = Math.floor(Math.random() * 21) + 30; // 30-50
-    const price2 = Math.floor(Math.random() * 31) + 50; // 50-80
-    const price3 = Math.floor(Math.random() * 41) + 80; // 80-120
 
     const newLoc: LocationData = {
       id: newId,
@@ -782,12 +779,8 @@ const App: React.FC = () => {
       name: 'New Branch Location',
       description: 'Describe this new workspace branch...',
       address: 'Enter physical address here',
-      categories: [{ id: catId, name: categoryName, description: 'Catering for the new branch' }],
-      menu: [
-        { id: `m-loc1-${Date.now()}`, name: 'Signature Brewed Espresso', price: price1, description: 'Premium rich barista blend.', category: categoryName, image: 'https://picsum.photos/200/200?seed=sig-esp' },
-        { id: `m-loc2-${Date.now()}`, name: 'Butter Glazed Croissant', price: price2, description: 'Warm and flaky fresh oven bake.', category: categoryName, image: 'https://picsum.photos/200/200?seed=butter-cro' },
-        { id: `m-loc3-${Date.now()}`, name: 'Exotic Sliced Fruits', price: price3, description: 'Platter of sweet tropical organic fruits.', category: categoryName, image: 'https://picsum.photos/200/200?seed=exo-fru' }
-      ],
+      categories: [],
+      menu: [],
       floors: [
         {
           id: `floor-${Date.now()}`,
@@ -1678,6 +1671,9 @@ const App: React.FC = () => {
   }
 
   if (normalizedPath.startsWith('/network') && !selectedVendor && !parsedNetwork?.vendorId) {
+    if (catalogLoading) {
+      return <PageLoader />;
+    }
     return (
     <Suspense fallback={<PageLoader />}>
     <VendorSelection 
@@ -2020,7 +2016,7 @@ const App: React.FC = () => {
                     return filteredItems.map(item => (
                       <div key={item.id} className="bg-white rounded-[2.5rem] p-6 border border-slate-100 flex flex-col group hover:shadow-xl transition-all shadow-sm">
                         <div className="relative mb-6">
-                          <img src={item.image || `https://picsum.photos/400/400?seed=${item.id}`} className="w-full aspect-square object-cover rounded-3xl shadow-md" referrerPolicy="no-referrer" />
+                          <img src={imageOrPlaceholder(item.image)} className="w-full aspect-square object-cover rounded-3xl shadow-md" referrerPolicy="no-referrer" />
                           <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-[10px] font-black text-slate-900 uppercase tracking-widest border border-slate-100">{item.category}</div>
                         </div>
                         <h4 className="text-lg font-black text-slate-900 mb-1">{item.name}</h4>

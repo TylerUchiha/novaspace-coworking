@@ -20,9 +20,14 @@ export async function isCatalogEmpty(): Promise<boolean> {
 export async function ensureCatalogSeeded(): Promise<void> {
   if (!(await isCatalogEmpty())) return;
   try {
+    // Empty projects / emulators only. Production with meta/catalog.seeded no-ops.
+    // Never clear meta/catalog on production to force a re-seed — use admin UI.
     await seedCatalogRemote();
   } catch (err) {
-    console.warn('Auto-seed failed; using local fallback until seedCatalog runs.', err);
+    console.warn(
+      'Auto-seed failed. Catalog stays empty until Firestore has vendors/locations (admin UI) or seedCatalog succeeds on an empty project.',
+      err,
+    );
   }
 }
 

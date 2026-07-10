@@ -1,6 +1,11 @@
 
 import { Room, RoomStatus, Reservation, Vendor, Floor, LocationData } from './types';
 
+/**
+ * DEV FIXTURE ONLY — SF / NY / London / picsum demo catalog.
+ * Production UI must load from Firestore via admin PropertyConfig / MenuConfig.
+ * Do not use as a live client fallback. Never clear meta/catalog on production to re-seed.
+ */
 export const VENDORS: Vendor[] = [
   {
     id: 'v-novaspace',

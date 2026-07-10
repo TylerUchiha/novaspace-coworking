@@ -23,6 +23,7 @@ import { setMonitoringUserId } from '../services/firebaseMonitoring';
 import { UserProfile } from '../types';
 import { trackSignUp, trackLogin, setAnalyticsUserId } from '../services/analytics';
 import { registerFcmToken, unregisterFcmToken } from '../services/fcm';
+import { imageOrPlaceholder } from '../utils/mediaPlaceholders';
 import {
   clearCodeSession,
   CodeSessionRole,
@@ -186,7 +187,7 @@ function buildStaffProfile(firebaseUser: User, role: CodeSessionRole): UserProfi
       name: 'Global Access Admin',
       role: 'owner',
       email: 'global@novaspace.internal',
-      pfp: 'https://picsum.photos/400/400?seed=GlobalAccess',
+      pfp: imageOrPlaceholder(),
       credits: 0,
       paymentMethods: [],
     };
@@ -197,7 +198,7 @@ function buildStaffProfile(firebaseUser: User, role: CodeSessionRole): UserProfi
     name: 'Staff Member',
     role: 'employee',
     email: 'staff@novaspace.internal',
-    pfp: 'https://picsum.photos/400/400?seed=StaffPortal',
+    pfp: imageOrPlaceholder(),
     credits: 0,
     paymentMethods: [],
   };
@@ -210,7 +211,7 @@ function buildCodeSessionProfile(role: CodeSessionRole): UserProfile {
       name: 'Global Access Admin',
       role: 'owner',
       email: 'global@novaspace.internal',
-      pfp: 'https://picsum.photos/400/400?seed=GlobalAccess',
+      pfp: imageOrPlaceholder(),
       credits: 0,
       paymentMethods: [],
     };
@@ -221,7 +222,7 @@ function buildCodeSessionProfile(role: CodeSessionRole): UserProfile {
     name: 'Staff Member',
     role: 'employee',
     email: 'staff@novaspace.internal',
-    pfp: 'https://picsum.photos/400/400?seed=StaffPortal',
+    pfp: imageOrPlaceholder(),
     credits: 0,
     paymentMethods: [],
   };
@@ -295,7 +296,7 @@ function buildUserProfile(firebaseUser: User, extras?: Partial<UserProfile>): Us
     name: extras?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Member',
     role: 'customer',
     email: firebaseUser.email || extras?.email || '',
-    pfp: extras?.pfp || firebaseUser.photoURL || `https://picsum.photos/400/400?seed=${firebaseUser.uid}`,
+    pfp: extras?.pfp || firebaseUser.photoURL || imageOrPlaceholder(),
     phone: normalizePhone(extras?.phone),
     phoneVerified: extras?.phoneVerified ?? false,
     emailVerified: extras?.emailVerified ?? false,

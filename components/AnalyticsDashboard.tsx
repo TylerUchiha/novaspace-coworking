@@ -19,6 +19,7 @@ import {
   X
 } from 'lucide-react';
 import { Reservation, LocationData, Vendor, Room } from '../types';
+import { imageOrPlaceholder } from '../utils/mediaPlaceholders';
 
 interface AnalyticsDashboardProps {
   locations: LocationData[];
@@ -743,7 +744,7 @@ export default function AnalyticsDashboard({
                   >
                     {/* Item Thumbnail */}
                     <img 
-                      src={menuItemStat.image || `https://picsum.photos/seed/${encodeURIComponent(menuItemStat.name)}/100/100`}
+                      src={imageOrPlaceholder(menuItemStat.image)}
                       className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-sm shrink-0"
                       alt={menuItemStat.name}
                       referrerPolicy="no-referrer"

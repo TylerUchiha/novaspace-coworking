@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { getNovaBotResponse, getNovaBotErrorMessage, getNovaBotFilterUpdates } from '../services/geminiService';
 import { useRemoteConfig } from './RemoteConfigProvider';
 import { UserAvatar } from './UserAvatar';
+import { imageOrPlaceholder } from '../utils/mediaPlaceholders';
 
 interface LocationSelectionProps {
   vendor: Vendor;
@@ -332,7 +333,7 @@ const LocationSelection: React.FC<LocationSelectionProps> = ({
 
                     <div className="w-full md:w-48 h-48 shrink-0 rounded-[2.5rem] overflow-hidden shadow-inner bg-slate-100 relative">
                        <img 
-                        src={loc.image || `https://picsum.photos/seed/${loc.id}/600/600`} 
+                        src={imageOrPlaceholder(loc.image)} 
                         className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" 
                         alt={loc.name}
                        />
@@ -487,7 +488,7 @@ const LocationSelection: React.FC<LocationSelectionProps> = ({
               
               <div className="h-72 relative overflow-hidden shrink-0 bg-slate-100">
                 <img 
-                  src={expandedLocation.image || `https://picsum.photos/seed/${expandedLocation.id}/600/600`} 
+                  src={imageOrPlaceholder(expandedLocation.image)} 
                   alt={expandedLocation.name} 
                   className="w-full h-full object-cover" 
                 />

@@ -9,6 +9,8 @@ import RecaptchaWidget, { RecaptchaWidgetHandle } from './RecaptchaWidget';
 import { useRemoteConfig } from './RemoteConfigProvider';
 import { verifyRecaptchaRemote } from '../services/cloudFunctions';
 import { isRecaptchaMisconfigured, isRecaptchaRequired } from '../services/recaptcha';
+import { getAnalyticsConsent, setAnalyticsConsent } from '../utils/analyticsConsent';
+import { initFirebaseMonitoring } from '../services/firebaseMonitoring';
 
 interface LandingPageProps {
   onCodeLogin: (code: string) => boolean | Promise<boolean>;
@@ -319,13 +321,18 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
 
             <div className="flex gap-4 pt-4">
               <div className="flex -space-x-3">
-                {[1, 2, 3, 4].map((i) => (
-                  <img key={i} src={`https://picsum.photos/100/100?random=${i}`} className="w-12 h-12 rounded-full border-4 border-white shadow-sm" alt="User" />
+                {['#94a3b8', '#64748b', '#475569', '#334155'].map((color, i) => (
+                  <div
+                    key={i}
+                    className="w-12 h-12 rounded-full border-4 border-white shadow-sm"
+                    style={{ backgroundColor: color }}
+                    aria-hidden
+                  />
                 ))}
               </div>
               <div className="text-sm font-bold text-slate-400">
-                <p className="text-slate-900 font-black">2,400+ Active Members</p>
-                <p>Across 12 Global Cities</p>
+                <p className="text-slate-900 font-black">Members worldwide</p>
+                <p>Book desks and rooms in minutes</p>
               </div>
             </div>
 
@@ -690,6 +697,17 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
         </div>
         <div className="flex gap-8">
           <button onClick={onShowPrivacy} className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest">Privacy</button>
+          <button
+            type="button"
+            onClick={() => {
+              const next = getAnalyticsConsent() === 'accepted' ? 'rejected' : 'accepted';
+              setAnalyticsConsent(next);
+              if (next === 'accepted') void initFirebaseMonitoring();
+            }}
+            className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest"
+          >
+            Analytics prefs
+          </button>
           <button onClick={onShowTerms} className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest">Terms</button>
           <button onClick={onShowSupport} className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest">Support</button>
         </div>

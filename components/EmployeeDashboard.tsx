@@ -2,6 +2,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Reservation, Room, UserProfile, LocationData, Vendor } from '../types';
 import { UserAvatar } from './UserAvatar';
+import { imageOrPlaceholder } from '../utils/mediaPlaceholders';
 import { resolveMenuItemPrice } from '../utils/menuCatalog';
 import { 
   Users, 
@@ -131,7 +132,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   const getCustomerPfp = (name: string) => {
     const user = allUsers.find(u => u.name === name);
     if (user) return user.pfp;
-    return `https://picsum.photos/seed/${encodeURIComponent(name)}/100/100`;
+    return imageOrPlaceholder();
   };
 
   const handleApproveAction = (resGroup: Reservation[]) => {

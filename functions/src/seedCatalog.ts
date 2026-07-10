@@ -3,6 +3,11 @@ import { db } from './db';
 import seedData from './seed-data.json';
 import { syncStaffAccessCodeForLocation } from './staffAccessCodes';
 
+/**
+ * DEV / empty-project seed only.
+ * Production: never clear meta/catalog.seeded to force a re-seed — use admin UI instead.
+ * seed-data.json remains a demo fixture (picsum / SF-NY-London).
+ */
 interface SeedData {
   vendors: Record<string, unknown>[];
   locations: Record<string, unknown>[];

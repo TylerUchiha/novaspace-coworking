@@ -5,6 +5,7 @@ import { Users, Wifi, Tv, Coffee, Wind, X, CreditCard, Clock, Sparkles, Zap, Sea
 import { motion, AnimatePresence } from 'motion/react';
 import { UserAvatar } from './UserAvatar';
 import { createWalkInMemberRemote } from '../services/cloudFunctions';
+import { imageOrPlaceholder } from '../utils/mediaPlaceholders';
 
 interface RoomDetailProps {
   rooms: Room[];
@@ -71,9 +72,7 @@ const RoomDetail: React.FC<RoomDetailProps> = ({ rooms, onBook, selectedDate, se
       if (room.images && room.images.length > 0) {
         images.push(...room.images);
       } else {
-        // Fallback images if none provided
-        images.push(`https://picsum.photos/seed/${room.id}-1/800/600`);
-        images.push(`https://picsum.photos/seed/${room.id}-2/800/600`);
+        images.push(imageOrPlaceholder());
       }
     });
     return images;

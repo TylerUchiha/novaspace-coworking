@@ -11,6 +11,18 @@ export const CookieConsentBanner: React.FC = () => {
     setVisible(getAnalyticsConsent() === null);
   }, []);
 
+  useEffect(() => {
+    const onConsentChanged = (event: Event) => {
+      const detail = (event as CustomEvent<'accepted' | 'rejected'>).detail;
+      if (detail === 'accepted') {
+        void initFirebaseMonitoring();
+      }
+      setVisible(getAnalyticsConsent() === null);
+    };
+    window.addEventListener('novaspace:consent-changed', onConsentChanged);
+    return () => window.removeEventListener('novaspace:consent-changed', onConsentChanged);
+  }, []);
+
   const accept = () => {
     setAnalyticsConsent('accepted');
     void initFirebaseMonitoring();
@@ -36,8 +48,9 @@ export const CookieConsentBanner: React.FC = () => {
             <Cookie size={20} />
           </div>
           <p className="text-sm text-slate-600 font-medium leading-relaxed">
-            We use cookies and Firebase Analytics to improve NovaSpace. You can accept analytics cookies or
-            continue with essential cookies only. See our{' '}
+            Essential cookies keep you signed in and protect the site (reCAPTCHA and optional App Check).
+            With your consent we also use Firebase Analytics and optional Crashlytics to improve Nova Space.
+            You can change this anytime in Profile → Privacy preferences. See our{' '}
             <Link to="/privacy" className="text-blue-600 font-bold hover:underline">
               Privacy Policy
             </Link>
@@ -57,7 +70,7 @@ export const CookieConsentBanner: React.FC = () => {
             onClick={accept}
             className="px-4 py-2.5 rounded-xl text-sm font-black text-white bg-blue-600 hover:bg-blue-700 transition-colors"
           >
-            Accept
+            Accept analytics
           </button>
         </div>
       </div>

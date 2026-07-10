@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Room, RoomStatus, Floor, LocationData, Vendor, Reservation } from '../types';
 import { ROOM_COLORS } from '../constants';
+import { imageOrPlaceholder } from '../utils/mediaPlaceholders';
 import { uploadVendorLogo, uploadRoomImage } from '../services/storageUpload';
 import { useImageCropUpload } from './ImageCropPortal';
 import { Plus, Trash2, Move, Edit3, Settings2, ChevronDown, Sparkles, X, Calendar, MapPin, Layers3, Maximize2, Undo2, Redo2, ArrowRight, Layers, Layout, Globe, Clock, Building2, Info, Map as MapIcon, PlusCircle, Ban, FileText, AlertCircle, Image as ImageIcon, Upload, Trash, ShieldCheck } from 'lucide-react';
@@ -185,13 +186,6 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
 
   const handleAddRoom = (type: 'reservable' | 'service') => {
     const roomName = type === 'reservable' ? 'New Space' : 'Service Area';
-    const catId = `cat-new-${Date.now()}`;
-    const categoryName = `${roomName} Amenities`;
-    
-    // Generate 3 random-looking prices
-    const price1 = Math.floor(Math.random() * 21) + 30; // 30 - 50 EGP
-    const price2 = Math.floor(Math.random() * 31) + 50; // 50 - 80 EGP
-    const price3 = Math.floor(Math.random() * 41) + 80; // 80 - 120 EGP
 
     const newRoom: Room = {
       id: `room-${Date.now()}`,
@@ -205,12 +199,8 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
       width: 15,
       height: 15,
       pricePerHour: type === 'reservable' ? 25 : 0,
-      categories: [{ id: catId, name: categoryName, description: `Special catering items for ${roomName}` }],
-      menu: [
-        { id: `m-new1-${Date.now()}`, name: 'Espresso Single Shot', price: price1, description: 'Premium rich aromatic roast.', category: categoryName, image: 'https://picsum.photos/200/200?seed=new-espresso' },
-        { id: `m-new2-${Date.now()}`, name: 'Fresh Croissant', price: price2, description: 'Flaky baked French butter croissant.', category: categoryName, image: 'https://picsum.photos/200/200?seed=new-croissant' },
-        { id: `m-new3-${Date.now()}`, name: 'Premium Fruit Cup', price: price3, description: 'Selection of fresh sweet seasonal fruits.', category: categoryName, image: 'https://picsum.photos/200/200?seed=new-fruit' }
-      ]
+      categories: [],
+      menu: []
     };
     const newRooms = [...rooms, newRoom];
     onUpdateRooms(newRooms);
@@ -894,7 +884,7 @@ const PropertyConfig: React.FC<PropertyConfigProps> = ({
                          <div className="bg-white rounded-[3.5rem] p-8 border-2 border-slate-100 shadow-xl overflow-hidden flex flex-col gap-6">
                             <div className="w-full h-40 shrink-0 rounded-[2.5rem] overflow-hidden shadow-inner bg-slate-100 relative">
                                <img 
-                                src={location.image || `https://picsum.photos/seed/${location.id}/600/600`} 
+                                src={imageOrPlaceholder(location.image)} 
                                 className="w-full h-full object-cover" 
                                 alt={location.name}
                                />
