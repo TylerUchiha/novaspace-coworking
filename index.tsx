@@ -6,7 +6,6 @@ import App from './App';
 import { AuthProvider } from './components/AuthProvider';
 import { RemoteConfigProvider } from './components/RemoteConfigProvider';
 import { MonitoringErrorBoundary, RouteAwareErrorBoundary } from './components/MonitoringErrorBoundary';
-import { CookieConsentBanner } from './components/CookieConsentBanner';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -23,7 +22,6 @@ root.render(
             <RouteAwareErrorBoundary>
               <App />
             </RouteAwareErrorBoundary>
-            <CookieConsentBanner />
           </BrowserRouter>
         </AuthProvider>
       </RemoteConfigProvider>

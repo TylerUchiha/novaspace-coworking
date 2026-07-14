@@ -77,7 +77,7 @@ const PrivacyPage: React.FC<PrivacyPageProps> = ({ onBack }) => {
               Essential cookies and local storage are required for sign-in, session management, and security (including reCAPTCHA and optional App Check).
             </p>
             <p className="text-slate-600 font-medium leading-relaxed">
-              With your consent, we use Firebase Analytics and optional Crashlytics to understand how the service is used and to diagnose errors. You can accept or decline analytics via the banner on your first visit, and change your choice later under Profile → Privacy preferences. Declining limits us to essential cookies only.
+              We use Firebase Analytics and optional Crashlytics to understand how the service is used and to diagnose errors. Essential cookies always run for sign-in and security. Users who previously opted out of analytics remain opted out.
             </p>
           </section>
 

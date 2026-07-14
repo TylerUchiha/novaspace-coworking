@@ -15,5 +15,6 @@ export function setAnalyticsConsent(value: 'accepted' | 'rejected'): void {
 }
 
 export function hasAnalyticsConsent(): boolean {
-  return getAnalyticsConsent() === 'accepted';
+  // Privacy preference UI removed — analytics on unless previously rejected.
+  return getAnalyticsConsent() !== 'rejected';
 }

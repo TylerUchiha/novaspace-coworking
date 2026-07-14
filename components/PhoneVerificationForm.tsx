@@ -2,10 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, MessageSquare, Phone, RefreshCw } from 'lucide-react';
 import PhoneNumberInput from './PhoneNumberInput';
 import {
+  PHONE_RATE_LIMIT_COOLDOWN_SECONDS,
   PhoneVerificationSession,
   buildPhoneE164FromParts,
   confirmPhoneVerificationCode,
   destroyRecaptcha,
+  getPhoneRateLimitRemainingSeconds,
   isLocalhostPhoneAuthBlocked,
   isPhoneRateLimitError,
   isValidNationalPhoneNumber,
@@ -18,7 +20,6 @@ import {
 type Step = 'phone' | 'send' | 'code';
 
 const RESEND_COOLDOWN_SECONDS = 3 * 60;
-const RATE_LIMIT_COOLDOWN_SECONDS = 2 * 60;
 
 function formatResendCooldown(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -111,6 +112,24 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
 
+  // Restore persisted Firebase rate-limit cooldown across reloads.
+  useEffect(() => {
+    const parts = lockPhone
+      ? lockedParts
+      : { countryCode, nationalNumber };
+    if (!isValidNationalPhoneNumber(parts.nationalNumber)) return;
+    const phoneE164 = buildPhoneE164FromParts(parts.countryCode, parts.nationalNumber);
+    const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
+    if (remaining > 0) {
+      setResendCooldown((prev) => Math.max(prev, remaining));
+    }
+  }, [
+    countryCode,
+    nationalNumber,
+    lockPhone,
+    lockedParts,
+  ]);
+
   const activeCountryCode = lockPhone ? lockedParts.countryCode : countryCode;
   const activeNationalNumber = lockPhone ? lockedParts.nationalNumber : nationalNumber;
   const sendBlocked = isSending || resendCooldown > 0;
@@ -133,10 +152,13 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     return phoneE164;
   };
 
-  const applySendFailure = (err: unknown) => {
-    setError(mapPhoneAuthError(err));
+  const applySendFailure = (err: unknown, phoneE164: string) => {
+    setError(mapPhoneAuthError(err, phoneE164));
     if (isPhoneRateLimitError(err)) {
-      setResendCooldown(RATE_LIMIT_COOLDOWN_SECONDS);
+      const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
+      setResendCooldown(
+        remaining > 0 ? remaining : PHONE_RATE_LIMIT_COOLDOWN_SECONDS,
+      );
     }
   };
 
@@ -166,7 +188,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
       if (requestId !== sendRequestIdRef.current) return;
-      applySendFailure(err);
+      applySendFailure(err, phoneE164);
     } finally {
       if (requestId === sendRequestIdRef.current) {
         sendInFlightRef.current = false;
@@ -237,7 +259,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
       if (requestId !== sendRequestIdRef.current) return;
-      applySendFailure(err);
+      applySendFailure(err, resolvePhoneE164());
     } finally {
       if (requestId === sendRequestIdRef.current) {
         sendInFlightRef.current = false;

@@ -16,6 +16,12 @@ let recaptchaRenderPromise: Promise<RecaptchaVerifier> | null = null;
 /** Bumped on destroy so in-flight render() results are discarded. */
 let recaptchaGeneration = 0;
 
+/** Client-side cooldown after Firebase auth/too-many-requests (persisted). */
+const RATE_LIMIT_STORAGE_PREFIX = 'novaspace_phone_rate_limit:';
+/** Local block after rate-limit — Firebase project cooldowns are often longer. */
+export const PHONE_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
+export const PHONE_RATE_LIMIT_COOLDOWN_SECONDS = PHONE_RATE_LIMIT_COOLDOWN_MS / 1000;
+
 /** Enable fictional test numbers from Firebase Console (dev only). */
 if (import.meta.env.DEV && import.meta.env.VITE_PHONE_AUTH_TEST_MODE === 'true') {
   auth.settings.appVerificationDisabledForTesting = true;
@@ -141,7 +147,69 @@ export function isLocalhostPhoneAuthBlocked(): boolean {
   return window.location.hostname === 'localhost';
 }
 
-export function mapPhoneAuthError(error: unknown): string {
+function rateLimitStorageKey(phoneE164: string): string {
+  const digits = normalizePhoneDigits(phoneE164);
+  const uid = auth.currentUser?.uid ?? 'anon';
+  return `${RATE_LIMIT_STORAGE_PREFIX}${uid}:${digits}`;
+}
+
+/** Seconds remaining on the local post-rate-limit cooldown (0 if clear). */
+export function getPhoneRateLimitRemainingSeconds(phoneE164: string): number {
+  if (typeof window === 'undefined' || !phoneE164) return 0;
+  try {
+    const raw = localStorage.getItem(rateLimitStorageKey(phoneE164));
+    if (!raw) return 0;
+    const until = Number(raw);
+    if (!Number.isFinite(until)) return 0;
+    const remainingMs = until - Date.now();
+    if (remainingMs <= 0) {
+      localStorage.removeItem(rateLimitStorageKey(phoneE164));
+      return 0;
+    }
+    return Math.ceil(remainingMs / 1000);
+  } catch {
+    return 0;
+  }
+}
+
+export function recordPhoneRateLimitHit(phoneE164: string): void {
+  if (typeof window === 'undefined' || !phoneE164) return;
+  try {
+    const until = Date.now() + PHONE_RATE_LIMIT_COOLDOWN_MS;
+    localStorage.setItem(rateLimitStorageKey(phoneE164), String(until));
+  } catch {
+    // Ignore quota / private mode failures.
+  }
+}
+
+export function clearPhoneRateLimit(phoneE164: string): void {
+  if (typeof window === 'undefined' || !phoneE164) return;
+  try {
+    localStorage.removeItem(rateLimitStorageKey(phoneE164));
+  } catch {
+    // Ignore.
+  }
+}
+
+function assertClientRateLimitAllowsSend(phoneE164: string): void {
+  const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
+  if (remaining > 0) {
+    throw new FirebaseError(
+      'auth/too-many-requests',
+      `Client cooldown active (${remaining}s remaining)`,
+    );
+  }
+}
+
+function formatRateLimitWaitHint(remainingSeconds?: number): string {
+  if (remainingSeconds && remainingSeconds > 0) {
+    const mins = Math.max(1, Math.ceil(remainingSeconds / 60));
+    return `Wait about ${mins} minute${mins === 1 ? '' : 's'} before trying again.`;
+  }
+  return 'Wait at least 1 hour before trying again. Firebase may keep blocking longer at the project level — if it still fails after that, check billing, SMS regions, and Auth quotas in Firebase Console.';
+}
+
+export function mapPhoneAuthError(error: unknown, phoneE164?: string): string {
   if (error instanceof Error) {
     const msg = error.message.toLowerCase();
     if (msg.includes('recaptcha has already been rendered')) {
@@ -165,8 +233,12 @@ export function mapPhoneAuthError(error: unknown): string {
         return 'Incorrect verification code. Please try again.';
       case 'auth/code-expired':
         return 'Verification code expired.';
-      case 'auth/too-many-requests':
-        return 'Too many verification attempts. Wait for the cooldown, then tap Send again.';
+      case 'auth/too-many-requests': {
+        const remaining = phoneE164
+          ? getPhoneRateLimitRemainingSeconds(phoneE164)
+          : undefined;
+        return `Too many verification attempts. ${formatRateLimitWaitHint(remaining)} Do not keep tapping Send — that extends the lockout.`;
+      }
       case 'auth/credential-already-in-use':
         return 'This phone number is already linked to another account.';
       case 'auth/provider-already-linked':
@@ -295,10 +367,10 @@ async function wait(ms: number): Promise<void> {
   await new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-/** Always start from a clean invisible reCAPTCHA for each SMS send. */
-async function getFreshRecaptchaVerifier(): Promise<RecaptchaVerifier> {
+/** Recreate invisible reCAPTCHA only when the previous widget is known-bad. */
+async function getRecaptchaVerifierAfterReset(): Promise<RecaptchaVerifier> {
   destroyRecaptcha();
-  await wait(300);
+  await wait(400);
   return getRecaptchaVerifier();
 }
 
@@ -315,7 +387,11 @@ export async function sendPhoneVerificationSms(
     throw new FirebaseError('auth/invalid-app-credential', 'Phone auth blocked on localhost');
   }
 
-  const verifier = await getFreshRecaptchaVerifier();
+  assertClientRateLimitAllowsSend(phoneE164);
+
+  // Reuse an existing verifier when possible — destroy/recreate burns reCAPTCHA quota.
+  const verifier =
+    retryAttempt > 0 ? await getRecaptchaVerifierAfterReset() : await getRecaptchaVerifier();
 
   try {
     if (currentUser.phoneNumber) {
@@ -332,16 +408,19 @@ export async function sendPhoneVerificationSms(
         linkError instanceof FirebaseError &&
         linkError.code === 'auth/provider-already-linked'
       ) {
-        destroyRecaptcha();
-        await wait(400);
-        const updateVerifier = await getFreshRecaptchaVerifier();
+        // Same verifier can often continue; only reset if verify fails later via retry path.
         const provider = new PhoneAuthProvider(auth);
-        const verificationId = await provider.verifyPhoneNumber(phoneE164, updateVerifier);
+        const verificationId = await provider.verifyPhoneNumber(phoneE164, verifier);
         return { type: 'update', verificationId };
       }
       throw linkError;
     }
   } catch (error) {
+    if (isPhoneRateLimitError(error)) {
+      recordPhoneRateLimitHit(phoneE164);
+      destroyRecaptcha();
+      throw error;
+    }
     if (retryAttempt < 1 && isRetryablePhoneAuthError(error)) {
       destroyRecaptcha();
       await wait(2000);
@@ -357,10 +436,15 @@ export async function sendPasswordResetPhoneSms(phoneE164: string): Promise<Conf
     throw new FirebaseError('auth/invalid-app-credential', 'Phone auth blocked on localhost');
   }
 
+  assertClientRateLimitAllowsSend(phoneE164);
+
   const verifier = await getRecaptchaVerifier();
   try {
     return await signInWithPhoneNumber(auth, phoneE164, verifier);
   } catch (error) {
+    if (isPhoneRateLimitError(error)) {
+      recordPhoneRateLimitHit(phoneE164);
+    }
     destroyRecaptcha();
     throw error;
   }

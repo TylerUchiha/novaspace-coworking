@@ -48,8 +48,11 @@ Copy `.env.production.example` → `.env.production` for local production builds
 ### Phone SMS
 
 - [ ] Auth authorized domains include `novaspace.work`, `www.novaspace.work`, and `127.0.0.1`
-- [ ] Phone provider enabled; Egypt (+20) allowed if needed
-- [ ] Test on `https://novaspace.work` (never bare `localhost`)
+- [ ] Phone provider enabled; Egypt (+20) allowed if needed (`npm run configure:phone-auth`)
+- [ ] Blaze billing enabled (required for production SMS)
+- [ ] Test on `https://novaspace.work` or `http://127.0.0.1` (never bare `localhost`)
+- [ ] After `auth/too-many-requests`, wait for project cooldown (often hours); the app enforces a 1-hour local cooldown and does not auto-retry
+- [ ] Dev: optional Firebase Console test phone numbers + `VITE_PHONE_AUTH_TEST_MODE=true`
 - [ ] Send SMS → code → profile shows Verified; hard refresh stays verified
 - [ ] Client forge of `phoneVerified: true` is denied (`permission-denied`)
 - [ ] `confirmPhoneVerified` Cloud Function is live (rules lock client writes)
@@ -118,11 +121,11 @@ Full manual smoke: see [`PRODUCTION_SMOKE.md`](PRODUCTION_SMOKE.md).
 - Auth Console delete: `onAuthUserDeleted` wipe safety net
 - Staff / `code-*` sessions cannot self-delete
 
-## Analytics consent
+## Analytics
 
-- First visit: banner (Accept analytics / Essential only)
-- Later: Profile → **Privacy preferences** (same `novaspace_analytics_consent` key)
-- Aligns with Privacy Policy § Cookies & Analytics
+- Analytics and monitoring run by default (essential cookies always required for sign-in/security).
+- Prior opt-outs stored in `novaspace_analytics_consent` are still honored (`rejected` stays off).
+- Privacy preference UI and cookie banner are disabled.
 
 ## Later (non-blocking)
 

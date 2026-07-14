@@ -45,12 +45,10 @@ Run on `https://novaspace.work` after a deploy you approve. Do not use bare `loc
 2. Attempt a client `setDoc`/`updateDoc` merge `{ phoneVerified: true }` on your user doc.
 3. **Expect:** `permission-denied`.
 
-## 8. Analytics consent
+## 8. Analytics
 
-1. Clear site data or use a fresh profile so `novaspace_analytics_consent` is unset.
-2. First visit shows the consent banner.
-3. **Accept analytics** → monitoring/analytics may init; **Essential only** → analytics stay off.
-4. Profile → **Privacy preferences** can change the choice later.
+1. Privacy preference UI and cookie banner are not shown.
+2. Fresh profiles get analytics/monitoring by default; prior `rejected` consent stays off.
 
 ## Catalog note
 

@@ -20,7 +20,7 @@ export function mapPasswordResetError(error: unknown): string {
       case 'auth/user-not-found':
         return 'If an account exists for this email, a reset link has been sent.';
       case 'auth/too-many-requests':
-        return 'Too many attempts. Please wait a few minutes and try again.';
+        return 'Too many verification attempts. Wait at least 1 hour before trying again. Do not keep requesting codes — that extends the Firebase lockout.';
       case 'functions/not-found':
         return error.message || 'No account found with this phone number.';
       case 'functions/failed-precondition':

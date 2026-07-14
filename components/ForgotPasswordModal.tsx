@@ -5,6 +5,7 @@ import {
   buildPhoneE164FromParts,
   confirmPasswordResetPhoneCode,
   destroyRecaptcha,
+  isPhoneRateLimitError,
   isValidNationalPhoneNumber,
   mapPhoneAuthError,
   normalizePhoneDigits,
@@ -85,7 +86,12 @@ const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
       confirmationRef.current = await sendPasswordResetPhoneSms(phoneE164);
       setPhoneStep('code');
     } catch (err) {
-      setError(mapPasswordResetError(err));
+      const phoneE164 = buildPhoneE164FromParts(countryCode, nationalNumber);
+      setError(
+        isPhoneRateLimitError(err)
+          ? mapPhoneAuthError(err, phoneE164)
+          : mapPasswordResetError(err),
+      );
     } finally {
       setIsSubmitting(false);
     }

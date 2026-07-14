@@ -9,8 +9,6 @@ import RecaptchaWidget, { RecaptchaWidgetHandle } from './RecaptchaWidget';
 import { useRemoteConfig } from './RemoteConfigProvider';
 import { verifyRecaptchaRemote } from '../services/cloudFunctions';
 import { isRecaptchaMisconfigured, isRecaptchaRequired } from '../services/recaptcha';
-import { getAnalyticsConsent, setAnalyticsConsent } from '../utils/analyticsConsent';
-import { initFirebaseMonitoring } from '../services/firebaseMonitoring';
 
 interface LandingPageProps {
   onCodeLogin: (code: string) => boolean | Promise<boolean>;
@@ -697,17 +695,6 @@ const LandingPage: React.FC<LandingPageProps> = ({ onCodeLogin, onShowPrivacy, o
         </div>
         <div className="flex gap-8">
           <button onClick={onShowPrivacy} className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest">Privacy</button>
-          <button
-            type="button"
-            onClick={() => {
-              const next = getAnalyticsConsent() === 'accepted' ? 'rejected' : 'accepted';
-              setAnalyticsConsent(next);
-              if (next === 'accepted') void initFirebaseMonitoring();
-            }}
-            className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest"
-          >
-            Analytics prefs
-          </button>
           <button onClick={onShowTerms} className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest">Terms</button>
           <button onClick={onShowSupport} className="text-[10px] font-black text-slate-400 hover:text-white transition-colors uppercase tracking-widest">Support</button>
         </div>
