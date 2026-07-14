@@ -255,6 +255,69 @@ function stripClientWritableProfile(profile: UserProfile): Record<string, unknow
   return stripUndefined(writable as unknown as Record<string, unknown>);
 }
 
+/** Survives refresh when Firestore cache briefly returns stale verified:false. */
+function verifiedCacheKey(uid: string): string {
+  return `novaspace_contact_verified:${uid}`;
+}
+
+function loadVerifiedCache(uid: string): { emailVerified: boolean; phoneVerified: boolean } {
+  try {
+    const raw = sessionStorage.getItem(verifiedCacheKey(uid));
+    if (!raw) return { emailVerified: false, phoneVerified: false };
+    const parsed = JSON.parse(raw) as { emailVerified?: boolean; phoneVerified?: boolean };
+    return {
+      emailVerified: parsed.emailVerified === true,
+      phoneVerified: parsed.phoneVerified === true,
+    };
+  } catch {
+    return { emailVerified: false, phoneVerified: false };
+  }
+}
+
+function rememberVerifiedFlags(
+  uid: string,
+  emailVerified: boolean,
+  phoneVerified: boolean,
+): void {
+  try {
+    const prev = loadVerifiedCache(uid);
+    sessionStorage.setItem(
+      verifiedCacheKey(uid),
+      JSON.stringify({
+        emailVerified: emailVerified || prev.emailVerified,
+        phoneVerified: phoneVerified || prev.phoneVerified,
+      }),
+    );
+  } catch {
+    // sessionStorage may be unavailable
+  }
+}
+
+function clearVerifiedCache(uid: string): void {
+  try {
+    sessionStorage.removeItem(verifiedCacheKey(uid));
+  } catch {
+    // ignore
+  }
+}
+
+/** Never demote verified flags — merge server/cache/prev/session. */
+function resolveVerifiedFlags(
+  uid: string,
+  data: { emailVerified?: boolean; phoneVerified?: boolean },
+  prev?: UserProfile | null,
+): { emailVerified: boolean; phoneVerified: boolean } {
+  const cached = loadVerifiedCache(uid);
+  const emailVerified =
+    data.emailVerified === true || prev?.emailVerified === true || cached.emailVerified;
+  const phoneVerified =
+    data.phoneVerified === true || prev?.phoneVerified === true || cached.phoneVerified;
+  if (emailVerified || phoneVerified) {
+    rememberVerifiedFlags(uid, emailVerified, phoneVerified);
+  }
+  return { emailVerified, phoneVerified };
+}
+
 /** Payload safe for users/{uid} create/update under firestore.rules. */
 function toFirestoreUserWrite(profile: UserProfile): Record<string, unknown> {
   return {
@@ -418,13 +481,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const docSnap = await getDocFromServer(docRef);
       if (docSnap.exists()) {
         const data = docSnap.data() as UserProfile;
-        const rawVerified = data.emailVerified;
         const firestoreRole = data.role;
+        const verified = resolveVerifiedFlags(firebaseUser.uid, data, null);
         const existing = {
           ...data,
           role: (firestoreRole === 'owner' || firestoreRole === 'employee' ? firestoreRole : 'customer') as UserProfile['role'],
-          emailVerified: rawVerified === true,
-          phoneVerified: data.phoneVerified === true,
+          emailVerified: verified.emailVerified,
+          phoneVerified: verified.phoneVerified,
         };
         const merged = mergeSignupExtras(existing, extras);
         const profileToUse = applyProfile(merged !== existing ? merged : existing, firebaseUser);
@@ -462,12 +525,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (!newProfile) return;
 
-    // Never demote verified flags in memory once set (OTP / SMS own promotion).
+    // Never demote verified flags in memory once set (OTP / SMS own promotion),
+    // except when the phone number itself changes (must re-verify the new number).
+    const phoneChanged =
+      normalizePhone(newProfile.phone) !== normalizePhone(userProfile?.phone);
     const emailVerified =
       newProfile.emailVerified === true || userProfile?.emailVerified === true;
-    const phoneVerified =
-      newProfile.phoneVerified === true || userProfile?.phoneVerified === true;
+    const phoneVerified = phoneChanged
+      ? newProfile.phoneVerified === true
+      : newProfile.phoneVerified === true || userProfile?.phoneVerified === true;
     const withVerified = { ...newProfile, emailVerified, phoneVerified };
+    if (user?.uid) {
+      if (phoneChanged && !phoneVerified) {
+        // Drop cached phoneVerified so refresh does not resurrect the old number's flag.
+        const cached = loadVerifiedCache(user.uid);
+        try {
+          sessionStorage.setItem(
+            verifiedCacheKey(user.uid),
+            JSON.stringify({ emailVerified: emailVerified || cached.emailVerified, phoneVerified: false }),
+          );
+        } catch {
+          // ignore
+        }
+      } else {
+        rememberVerifiedFlags(user.uid, emailVerified, phoneVerified);
+      }
+    }
     setUserProfile(applyProfile(withVerified, user));
 
     if (codeSessionRole || !user) return;
@@ -560,19 +643,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (!docSnap.exists()) return;
               const data = docSnap.data() as UserProfile;
               setUserProfile((prev) => {
-                let emailVerified = data.emailVerified === true;
-                let phoneVerified = data.phoneVerified === true;
-                // Cached snapshots can lag behind OTP/SMS server writes — never demote.
-                if (docSnap.metadata.fromCache) {
-                  emailVerified = emailVerified || prev?.emailVerified === true;
-                  phoneVerified = phoneVerified || prev?.phoneVerified === true;
-                }
+                // Always never-demote: cache AND server snapshots can briefly lag OTP writes.
+                const verified = resolveVerifiedFlags(currentUser.uid, data, prev);
                 return applyProfile(
                   {
                     ...data,
                     role: 'customer',
-                    emailVerified,
-                    phoneVerified,
+                    emailVerified: verified.emailVerified,
+                    phoneVerified: verified.phoneVerified,
                   },
                   currentUser,
                 );
@@ -723,6 +801,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setProfileSyncError(null);
     await unregisterFcmToken();
     void setAnalyticsUserId(null);
+    const uid = auth.currentUser?.uid ?? user?.uid;
+    if (uid) clearVerifiedCache(uid);
     clearCodeAuth();
     setUserProfile(null);
     setCodeSessionRole(null);
