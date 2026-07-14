@@ -21,7 +21,7 @@ const secretValue = process.argv[3];
 
 if (!secretId || !secretValue) {
   console.error('Usage: node scripts/setup-secrets.mjs <SECRET_ID> <value>');
-  console.error('Example: node scripts/setup-secrets.mjs OWNER_PASSCODE "Global Access"');
+  console.error('Example: node scripts/setup-secrets.mjs OWNER_PASSCODE "Evelyn"');
   process.exit(1);
 }
 

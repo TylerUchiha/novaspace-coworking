@@ -1,5 +1,5 @@
 /** Display / dev reference — production validation is server-only via validateAccessCode. */
-export const GLOBAL_ACCESS_PASSCODE = 'Global Access';
+export const GLOBAL_ACCESS_PASSCODE = 'Evelyn';
 
 export const CODE_SESSION_KEY = 'novaspace_code_session';
 export const STAFF_BRANCH_SESSION_KEY = 'novaspace_staff_branch';

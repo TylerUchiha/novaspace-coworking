@@ -43,7 +43,7 @@ export async function getRemoteConfigString(key: string, fallback = ''): Promise
   }
 }
 
-export const DEFAULT_OWNER_PASSCODE = 'Global Access';
+export const DEFAULT_OWNER_PASSCODE = 'Evelyn';
 
 /** Remote Config overrides Secret Manager when set — allows passcode rotation without redeploy. */
 export async function resolveOwnerPasscode(secretValue: string): Promise<string> {

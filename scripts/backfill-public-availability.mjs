@@ -11,7 +11,7 @@ import path from 'node:path';
 const projectId = 'refined-legend-420223';
 const apiKey = 'AIzaSyCRzC0nSmZY-Y7mBZbdsVVT4Q-vEKf4GaQ';
 const region = 'us-central1';
-const ownerPasscode = process.env.OWNER_PASSCODE || 'Global Access';
+const ownerPasscode = process.env.OWNER_PASSCODE || 'Evelyn';
 
 async function callCallable(name, data, idToken) {
   const url = `https://${region}-${projectId}.cloudfunctions.net/${name}`;
