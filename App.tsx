@@ -70,6 +70,12 @@ const timeToMinutes = (timeStr: string): number => {
   return (h || 0) * 60 + (m || 0);
 };
 
+/** Local calendar date YYYY-MM-DD (avoids UTC day-shift from toISOString). */
+function todayLocalISO(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 const App: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -288,7 +294,7 @@ const App: React.FC = () => {
   }, [vendorLocations, currentLocationId]);
 
   const [activeTab, setActiveTab] = useState<AppTab>(defaultTabForRole(userRole));
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(todayLocalISO);
   const [timeInput, setTimeInput] = useState("09:00");
   const [timePeriod, setTimePeriod] = useState<"AM" | "PM">("AM");
   const [bookingDuration, setBookingDuration] = useState(0);
@@ -303,6 +309,13 @@ const App: React.FC = () => {
   const [showAccessCodeModal, setShowAccessCodeModal] = useState(false);
   const openAccessCodeModal = useCallback(() => setShowAccessCodeModal(true), []);
   const [staffCodeDraft, setStaffCodeDraft] = useState('');
+
+  // Staff registry is day-of-operations only: pin date to local today.
+  useEffect(() => {
+    if (userRole !== 'employee') return;
+    const today = todayLocalISO();
+    setSelectedDate((prev) => (prev === today ? prev : today));
+  }, [userRole, activeTab]);
 
   const vendorLocationIdsKey = useMemo(() => {
     if (!selectedVendor?.id) return '';
@@ -434,9 +447,10 @@ const App: React.FC = () => {
   }, [currentLocationId]);
 
   useEffect(() => {
+    // Only reset when role actually changes — not on every remount race with URL tab sync.
     if (userRole === 'employee') setActiveTab('staff_registry');
     else if (userRole === 'owner') setActiveTab('property_config');
-    else setActiveTab('blueprint');
+    else if (userRole === 'customer') setActiveTab('blueprint');
   }, [userRole]);
 
   const goToTab = useCallback((tab: AppTab) => {
@@ -483,6 +497,18 @@ const App: React.FC = () => {
     }
   }, [loading, isAuthenticated, isStaff, userRole, location.pathname, navigate]);
 
+  // Staff never use /menu — send them to network (avoids stuck loader on typed URLs).
+  useEffect(() => {
+    if (loading || !isAuthenticated || !isStaff) return;
+    if (!isMenuPath(normalizedPath)) return;
+    const branch = loadStaffBranchSession();
+    if (branch) {
+      navigate(buildNetworkPath(branch.vendorId, branch.locationId, defaultTabForRole(userRole)), { replace: true });
+    } else {
+      navigate('/network', { replace: true });
+    }
+  }, [loading, isAuthenticated, isStaff, userRole, normalizedPath, navigate]);
+
   useEffect(() => {
     if (loading || isAuthenticated || isStaticPagePath(location.pathname)) return;
     if (location.pathname !== '/login') {
@@ -527,8 +553,17 @@ const App: React.FC = () => {
     setCurrentLocationId(branch.locationId);
     setCurrentFloorId(branch.floorId || loc.floors[0]?.id || '');
     setIsLocationConfirmed(true);
-    navigate(buildNetworkPath(vendor.id, loc.id, defaultTabForRole(userRole)), { replace: true });
-  }, [isAuthenticated, userRole, selectedVendor, allVendors, allLocations, navigate]);
+
+    // Preserve an existing branch URL tab; only navigate when not already on this branch.
+    const onThisBranch =
+      normalizedPath.startsWith(`/network/${encodeURIComponent(vendor.id)}/${encodeURIComponent(loc.id)}`);
+    if (onThisBranch) return;
+
+    const urlTab = parsedNetwork?.tab;
+    const tab =
+      urlTab && isValidTabForRole(urlTab, userRole) ? urlTab : defaultTabForRole(userRole);
+    navigate(buildNetworkPath(vendor.id, loc.id, tab), { replace: true });
+  }, [isAuthenticated, userRole, selectedVendor, allVendors, allLocations, navigate, normalizedPath, parsedNetwork?.tab]);
 
   const selectedTime24h = useMemo(() => {
     const parts = timeInput.split(':');
@@ -1118,7 +1153,9 @@ const App: React.FC = () => {
       if (activeTab === 'staff_registry') return (
         <EmployeeDashboard 
           selectedVendor={selectedVendor} 
-          reservations={allReservations.filter(r => r.vendorId === selectedVendor?.id)} 
+          reservations={allReservations.filter(
+            (r) => r.vendorId === selectedVendor?.id && r.date === selectedDate,
+          )} 
           locations={vendorLocations} 
           currentLocationId={currentLocationId} 
           onCancelReservation={handleCancelReservation} 
@@ -1465,7 +1502,12 @@ const App: React.FC = () => {
     return <PageLoader />;
   }
 
-  if (!isLoggedIn) return (
+  if (!isLoggedIn) {
+    // Protected URLs (e.g. /menu) must not render app chrome — redirect effect sends them to /login.
+    if (normalizedPath !== '/login' && !isStaticPagePath(normalizedPath)) {
+      return <PageLoader />;
+    }
+    return (
     <Suspense fallback={<PageLoader />}>
     <LandingPage 
       onCodeLogin={handleCodeLogin}
@@ -1475,6 +1517,7 @@ const App: React.FC = () => {
     />
     </Suspense>
   );
+  }
 
   if (isLoggedIn && normalizedPath === '/menu' && !isStaff) {
     const emailVerified = isEmailVerified(userProfile, user);
@@ -1708,11 +1751,14 @@ const App: React.FC = () => {
     );
   }
 
-  if (!selectedVendor || !isLocationConfirmed) {
-    return <PageLoader />;
-  }
-
-  if (location.pathname.startsWith('/network') && selectedVendor && !isLocationConfirmed && !parsedNetwork?.locationId) {
+  // Location picker must come BEFORE the PageLoader gate — otherwise Global Access
+  // "Enter Workspace" sticks on Loading (vendor set, location not confirmed).
+  if (
+    (location.pathname.startsWith('/network') || normalizedPath.startsWith('/network')) &&
+    selectedVendor &&
+    !isLocationConfirmed &&
+    !parsedNetwork?.locationId
+  ) {
     return (
     <Suspense fallback={<PageLoader />}>
     <LocationSelection 
@@ -1886,7 +1932,21 @@ const App: React.FC = () => {
             <div className="flex items-center gap-4">
               {userRole !== 'owner' && (
                 <div className="flex items-center gap-3 bg-slate-100 p-1.5 rounded-2xl border border-slate-200">
-                  <div className="flex flex-col px-4 py-1.5 bg-white rounded-xl shadow-sm border border-slate-100"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Date</label><input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="text-xs font-black text-slate-900 bg-transparent outline-none" /></div>
+                  <div className="flex flex-col px-4 py-1.5 bg-white rounded-xl shadow-sm border border-slate-100">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Date</label>
+                    <input
+                      type="date"
+                      value={selectedDate}
+                      min={userRole === 'employee' ? selectedDate : undefined}
+                      max={userRole === 'employee' ? selectedDate : undefined}
+                      readOnly={userRole === 'employee'}
+                      onChange={(e) => {
+                        if (userRole === 'employee') return;
+                        setSelectedDate(e.target.value);
+                      }}
+                      className="text-xs font-black text-slate-900 bg-transparent outline-none"
+                    />
+                  </div>
                   <div className="flex items-center gap-2 px-4 py-1.5 bg-white rounded-xl shadow-sm border border-slate-100">
                     <div className="flex flex-col"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Time Slot</label><select value={timeInput} onChange={e => setTimeInput(e.target.value)} className="text-xs font-black text-slate-900 bg-transparent outline-none w-16 appearance-none cursor-pointer"><option value="01:00">01:00</option><option value="02:00">02:00</option><option value="03:00">03:00</option><option value="04:00">04:00</option><option value="05:00">05:00</option><option value="06:00">06:00</option><option value="07:00">07:00</option><option value="08:00">08:00</option><option value="09:00">09:00</option><option value="10:00">10:00</option><option value="11:00">11:00</option><option value="12:00">12:00</option></select></div>
                     <div className="flex flex-col gap-0.5"><button onClick={() => setTimePeriod("AM")} className={`text-[8px] font-black px-1.5 py-0.5 rounded ${timePeriod === "AM" ? "bg-blue-600 text-white" : "text-slate-400"}`}>AM</button><button onClick={() => setTimePeriod("PM")} className={`text-[8px] font-black px-1.5 py-0.5 rounded ${timePeriod === "PM" ? "bg-blue-600 text-white" : "text-slate-400"}`}>PM</button></div>

@@ -49,5 +49,8 @@ export class MonitoringErrorBoundary extends React.Component<Props, State> {
 
 export function RouteAwareErrorBoundary({ children }: Props) {
   const location = useLocation();
-  return <MonitoringErrorBoundary key={location.pathname}>{children}</MonitoringErrorBoundary>;
+  // Key only on top-level area so tab changes under /network/... do not remount App
+  // (full pathname remounts wiped staff state and forced Registry).
+  const segment = location.pathname.split('/').filter(Boolean)[0] || 'root';
+  return <MonitoringErrorBoundary key={segment}>{children}</MonitoringErrorBoundary>;
 }
