@@ -220,6 +220,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /phoneVerifications/{uid} {
+      allow read, write: if false;
+    }
+
     match /phonePasswordResets/{sessionId} {
       allow read, write: if false;
     }

@@ -81,6 +81,7 @@ export async function wipeUserData(uid: string): Promise<{
   const transactionsDeleted = await deleteSubcollection(`users/${uid}/transactions`);
 
   await db.collection('emailVerifications').doc(uid).delete().catch(() => undefined);
+  await db.collection('phoneVerifications').doc(uid).delete().catch(() => undefined);
 
   try {
     const resetsSnap = await db.collection('phonePasswordResets').where('uid', '==', uid).get();

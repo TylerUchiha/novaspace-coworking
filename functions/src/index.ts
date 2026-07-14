@@ -35,6 +35,7 @@ import { submitSupportInquiry } from './supportInquiry';
 import { verifyRecaptcha } from './recaptcha';
 import { onAuthUserDeleted, adminDeleteUser, deleteMyAccount, wipeUserData } from './deleteAccount';
 import { confirmPhoneVerified } from './phoneVerificationConfirm';
+import { sendWhatsAppVerificationCode } from './whatsappVerification';
 
 if (!getApps().length) {
   initializeApp();
@@ -77,6 +78,7 @@ export {
   deleteMyAccount,
   wipeUserData,
   confirmPhoneVerified,
+  sendWhatsAppVerificationCode,
 };
 
 export const health = onRequest({ cors: true }, async (_req, res) => {

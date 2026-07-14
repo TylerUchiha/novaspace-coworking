@@ -18,7 +18,6 @@ import { useImageCropUpload } from './ImageCropPortal';
 import { doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import {
-  confirmPhoneVerifiedRemote,
   deleteMyAccountRemote,
 } from '../services/cloudFunctions';
 
@@ -145,12 +144,10 @@ const ProfilePage: React.FC<ProfilePageProps> = ({ user, reservations, onLogout,
 
   const handlePhoneVerified = async (_verifiedE164: string, phoneDigits: string) => {
     try {
-      await firebaseUser?.reload();
-      // Server owns phoneVerified — confirm Auth phone then write via Cloud Function.
-      const confirmed = await confirmPhoneVerifiedRemote(phoneDigits);
+      // WhatsApp verify callable already set phoneVerified on the server.
       const updated = {
         ...formData,
-        phone: confirmed.phone || phoneDigits,
+        phone: phoneDigits,
         phoneVerified: true,
       };
       setFormData(updated);
