@@ -51,8 +51,8 @@ Copy `.env.production.example` → `.env.production` for local production builds
 - [ ] Phone provider enabled; Egypt (+20) allowed if needed (`npm run configure:phone-auth`)
 - [ ] Blaze billing enabled (required for production SMS)
 - [ ] Test on `https://novaspace.work` or `http://127.0.0.1` (never bare `localhost`)
-- [ ] After `auth/too-many-requests`, wait for project cooldown (often hours); the app enforces a 1-hour local cooldown and does not auto-retry
-- [ ] Dev: optional Firebase Console test phone numbers + `VITE_PHONE_AUTH_TEST_MODE=true`
+- [ ] After `auth/too-many-requests`, wait ~1 hour (sometimes longer); the app cannot clear Firebase's lockout — do not keep tapping Send
+- [ ] Dev bypass: Firebase Console → Authentication → Phone → Phone numbers for testing + optional `VITE_PHONE_AUTH_TEST_MODE=true` locally
 - [ ] Send SMS → code → profile shows Verified; hard refresh stays verified
 - [ ] Client forge of `phoneVerified: true` is denied (`permission-denied`)
 - [ ] `confirmPhoneVerified` Cloud Function is live (rules lock client writes)

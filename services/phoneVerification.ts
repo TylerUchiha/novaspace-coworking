@@ -18,7 +18,11 @@ let recaptchaGeneration = 0;
 
 /** Client-side cooldown after Firebase auth/too-many-requests (persisted). */
 const RATE_LIMIT_STORAGE_PREFIX = 'novaspace_phone_rate_limit:';
-/** Local block after rate-limit — Firebase project cooldowns are often longer. */
+/**
+ * UI cooldown after a real Firebase rate-limit hit.
+ * Firebase project/IP/phone lockouts are often ~1 hour (sometimes longer) and
+ * cannot be cleared from the app — this only stops users from extending them.
+ */
 export const PHONE_RATE_LIMIT_COOLDOWN_MS = 60 * 60 * 1000;
 export const PHONE_RATE_LIMIT_COOLDOWN_SECONDS = PHONE_RATE_LIMIT_COOLDOWN_MS / 1000;
 
@@ -191,12 +195,28 @@ export function clearPhoneRateLimit(phoneE164: string): void {
   }
 }
 
+/** Wipe every persisted phone rate-limit key (all users/phones in this browser). */
+export function clearAllPhoneRateLimits(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(RATE_LIMIT_STORAGE_PREFIX)) keys.push(key);
+    }
+    keys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // Ignore.
+  }
+}
+
+/** Block Send locally after a real Firebase rate-limit so retries do not extend the lockout. */
 function assertClientRateLimitAllowsSend(phoneE164: string): void {
   const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
   if (remaining > 0) {
     throw new FirebaseError(
       'auth/too-many-requests',
-      `Client cooldown active (${remaining}s remaining)`,
+      `Client cooldown active (${remaining}s remaining). Firebase lockout may still be in effect.`,
     );
   }
 }
@@ -204,68 +224,71 @@ function assertClientRateLimitAllowsSend(phoneE164: string): void {
 function formatRateLimitWaitHint(remainingSeconds?: number): string {
   if (remainingSeconds && remainingSeconds > 0) {
     const mins = Math.max(1, Math.ceil(remainingSeconds / 60));
-    return `Wait about ${mins} minute${mins === 1 ? '' : 's'} before trying again.`;
+    return `Wait about ${mins} minute${mins === 1 ? '' : 's'} (Firebase lockouts are often ~1 hour). `;
   }
-  return 'Wait at least 1 hour before trying again. Firebase may keep blocking longer at the project level — if it still fails after that, check billing, SMS regions, and Auth quotas in Firebase Console.';
+  return 'Wait about 1 hour without retrying — Firebase owns this lockout and the app cannot clear it. ';
+}
+
+function formatFirebaseErrorDetail(error: FirebaseError): string {
+  const parts = [error.code];
+  if (error.message?.trim()) parts.push(error.message.trim());
+  return parts.join(' — ');
 }
 
 export function mapPhoneAuthError(error: unknown, phoneE164?: string): string {
   if (error instanceof Error) {
     const msg = error.message.toLowerCase();
     if (msg.includes('recaptcha has already been rendered')) {
-      return 'Security check needs a refresh. Reload the page and try again.';
+      return 'Security check needs a refresh. Reload the page and try again. (reCAPTCHA already rendered)';
     }
   }
 
   if (error instanceof FirebaseError) {
+    const detail = formatFirebaseErrorDetail(error);
     switch (error.code) {
       case 'auth/invalid-app-credential':
       case 'auth/invalid-app-credentials':
         if (isLocalhostPhoneAuthBlocked()) {
-          return 'Phone SMS verification does not work on localhost. Open the app at http://127.0.0.1:3000 instead, or use a Firebase test phone number.';
+          return `Phone SMS does not work on localhost (${detail}). Use http://127.0.0.1 instead.`;
         }
-        return 'Security verification failed. Refresh the page and try again. If this persists, confirm Phone auth and your SMS region are enabled in Firebase Console.';
+        return `Security verification failed (${detail}). Refresh and try again. Confirm Phone auth + App Check/reCAPTCHA in Firebase Console.`;
       case 'auth/invalid-phone-number':
-        return 'Invalid phone number. Use international format, e.g. +201211884876 (include country code, no leading 0 after it).';
+        return `Invalid phone number (${detail}). Use international format, e.g. +201211884876.`;
       case 'auth/missing-phone-number':
-        return 'Please enter a phone number.';
+        return `Please enter a phone number. (${detail})`;
       case 'auth/invalid-verification-code':
-        return 'Incorrect verification code. Please try again.';
+        return `Incorrect verification code. (${detail})`;
       case 'auth/code-expired':
-        return 'Verification code expired.';
+        return `Verification code expired. (${detail})`;
       case 'auth/too-many-requests': {
         const remaining = phoneE164
           ? getPhoneRateLimitRemainingSeconds(phoneE164)
           : undefined;
-        return `Too many verification attempts. ${formatRateLimitWaitHint(remaining)} Do not keep tapping Send — that extends the lockout.`;
+        return `Too many verification attempts (${detail}). ${formatRateLimitWaitHint(remaining)}Do not keep tapping Send — each attempt can extend the lockout. Use a different phone number, or a Firebase Console test number, if you need to verify sooner.`;
       }
       case 'auth/credential-already-in-use':
-        return 'This phone number is already linked to another account.';
+        return `This phone number is already linked to another account. (${detail})`;
       case 'auth/provider-already-linked':
-        return 'Use the new number below, then send a fresh verification code.';
+        return `Use the new number below, then send a fresh verification code. (${detail})`;
       case 'auth/requires-recent-login':
-        return 'For your security, sign out and sign back in, then verify your new phone number.';
+        return `Sign out and sign back in, then verify your phone. (${detail})`;
       case 'auth/session-expired':
-        return 'Verification session expired. Send a new code and try again.';
       case 'auth/invalid-verification-id':
-        return 'Verification session expired. Send a new code and try again.';
+        return `Verification session expired (${detail}). Send a new code.`;
       case 'auth/account-exists-with-different-credential':
-        return 'This phone number is already linked to another account.';
+        return `This phone number is already linked to another account. (${detail})`;
       case 'auth/captcha-check-failed':
-        return 'Security check failed. Refresh the page and try again.';
+        return `Security check failed (${detail}). Refresh the page and try again.`;
       case 'auth/quota-exceeded':
-        return 'SMS quota exceeded. Try again later or contact support.';
+        return `SMS quota exceeded (${detail}). Check Firebase Blaze billing / SMS quota.`;
       case 'auth/operation-not-allowed':
-        return 'Phone sign-in is not enabled. Enable Phone in Firebase Console → Authentication → Sign-in method, and allow your SMS region.';
+        return `Phone sign-in is not enabled (${detail}). Enable Phone in Firebase Console → Authentication.`;
       default:
-        if (error.message.toLowerCase().includes('firebase')) {
-          return 'Phone verification failed. Send a new code and try again.';
-        }
-        return error.message;
+        return `Phone verification failed (${detail}).`;
     }
   }
   if (error instanceof Error) {
-    return error.message;
+    return `Phone verification failed: ${error.message}`;
   }
   return 'Phone verification failed. Please try again.';
 }
@@ -305,18 +328,18 @@ export async function getRecaptchaVerifier(): Promise<RecaptchaVerifier> {
 
   recaptchaRenderPromise = (async () => {
     if (!recaptchaContainer) {
+      // Visible enough for Enterprise→v2 fallback challenges. Do not use
+      // 1×1px, overflow:hidden, or aria-hidden — those break the v2 widget.
       recaptchaContainer = document.createElement('div');
       recaptchaContainer.id = `phone-recaptcha-${Date.now()}`;
-      recaptchaContainer.setAttribute('aria-hidden', 'true');
       recaptchaContainer.style.position = 'fixed';
-      recaptchaContainer.style.bottom = '0';
-      recaptchaContainer.style.right = '0';
-      recaptchaContainer.style.width = '1px';
-      recaptchaContainer.style.height = '1px';
-      recaptchaContainer.style.overflow = 'hidden';
+      recaptchaContainer.style.bottom = '16px';
+      recaptchaContainer.style.right = '16px';
+      recaptchaContainer.style.zIndex = '2147483646';
       document.body.appendChild(recaptchaContainer);
     }
 
+    // Invisible size; container must not be clipped so v2 challenge fallback can render.
     const verifier = new RecaptchaVerifier(auth, recaptchaContainer, {
       size: 'invisible',
     });
@@ -387,6 +410,8 @@ export async function sendPhoneVerificationSms(
     throw new FirebaseError('auth/invalid-app-credential', 'Phone auth blocked on localhost');
   }
 
+  // After a real Firebase rate-limit, stop further Identity Toolkit calls for the UI cooldown
+  // so retries do not extend the project/IP/phone lockout.
   assertClientRateLimitAllowsSend(phoneE164);
 
   // Reuse an existing verifier when possible — destroy/recreate burns reCAPTCHA quota.

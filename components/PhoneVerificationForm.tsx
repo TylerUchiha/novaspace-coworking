@@ -112,7 +112,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
 
-  // Restore persisted Firebase rate-limit cooldown across reloads.
+  // Restore Firebase rate-limit cooldown across reloads so users do not keep extending lockout.
   useEffect(() => {
     const parts = lockPhone
       ? lockedParts
@@ -122,6 +122,9 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
     if (remaining > 0) {
       setResendCooldown((prev) => Math.max(prev, remaining));
+      setError(
+        `Too many verification attempts. Wait about ${Math.max(1, Math.ceil(remaining / 60))} minutes (Firebase lockouts are often ~1 hour). Do not keep tapping Send.`,
+      );
     }
   }, [
     countryCode,
@@ -153,6 +156,10 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   };
 
   const applySendFailure = (err: unknown, phoneE164: string) => {
+    const code =
+      err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : undefined;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[PhoneVerification] Send/confirm failed', { code, message, err, phoneE164 });
     setError(mapPhoneAuthError(err, phoneE164));
     if (isPhoneRateLimitError(err)) {
       const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
@@ -164,7 +171,11 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (sendInFlightRef.current || isSending || resendCooldown > 0) return;
+    if (sendInFlightRef.current || isSending) return;
+    if (resendCooldown > 0) {
+      setError(`Wait ${formatResendCooldown(resendCooldown)} before sending another code.`);
+      return;
+    }
 
     setError(null);
 
