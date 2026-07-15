@@ -11,7 +11,7 @@ cp .env.production.example .env.local   # optional local keys
 npm run dev
 ```
 
-Phone verification uses **WhatsApp OTP** (Meta Cloud API). See `docs/WHATSAPP_SETUP.md`.
+Phone SMS verification uses Firebase Phone Auth. Use `https://novaspace.work` or `http://127.0.0.1` (not bare `localhost`).
 
 ## Production deploy
 
@@ -45,14 +45,17 @@ Copy `.env.production.example` → `.env.production` for local production builds
 
 ## Ops verification runbook (checkboxes)
 
-### Phone (WhatsApp OTP)
+### Phone SMS
 
-- [ ] Meta WhatsApp app + approved **Authentication** template (default name `novaspace_phone_otp`, lang `en_US`)
-- [ ] Secrets set: `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` then `npm run functions:deploy`
-- [ ] Optional params: `WHATSAPP_TEMPLATE_NAME`, `WHATSAPP_TEMPLATE_LANG`
-- [ ] Send WhatsApp code → enter code → profile shows Verified; hard refresh stays verified
+- [ ] Auth authorized domains include `novaspace.work`, `www.novaspace.work`, and `127.0.0.1`
+- [ ] Phone provider enabled; Egypt (+20) allowed if needed (`npm run configure:phone-auth`)
+- [ ] Blaze billing enabled (required for production SMS)
+- [ ] Test on `https://novaspace.work` or `http://127.0.0.1` (never bare `localhost`)
+- [ ] After `auth/too-many-requests`, wait for project cooldown (often hours); the app enforces a 1-hour local cooldown and does not auto-retry
+- [ ] Dev: optional Firebase Console test phone numbers + `VITE_PHONE_AUTH_TEST_MODE=true`
+- [ ] Send SMS → code → profile shows Verified; hard refresh stays verified
 - [ ] Client forge of `phoneVerified: true` is denied (`permission-denied`)
-- [ ] `sendWhatsAppVerificationCode` Cloud Function is live (handles send + verify)
+- [ ] `confirmPhoneVerified` Cloud Function is live (rules lock client writes)
 
 ### Support email
 
@@ -65,7 +68,6 @@ Copy `.env.production.example` → `.env.production` for local production builds
 - [ ] `GEMINI_API_KEY` (Nova bot / AI)
 - [ ] `RECAPTCHA_SECRET_KEY` (server verify for login)
 - [ ] `OWNER_PASSCODE` (owner staff login)
-- [ ] `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` (phone OTP via WhatsApp)
 - [ ] Confirm login reCAPTCHA, owner passcode, and Nova bot still work
 
 ```bash

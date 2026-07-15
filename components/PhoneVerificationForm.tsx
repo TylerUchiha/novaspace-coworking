@@ -2,25 +2,29 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, MessageSquare, Phone, RefreshCw } from 'lucide-react';
 import PhoneNumberInput from './PhoneNumberInput';
 import {
-  buildPhoneDigits,
+  PHONE_RATE_LIMIT_COOLDOWN_SECONDS,
+  PhoneVerificationSession,
   buildPhoneE164FromParts,
+  confirmPhoneVerificationCode,
+  destroyRecaptcha,
+  getPhoneRateLimitRemainingSeconds,
+  isLocalhostPhoneAuthBlocked,
+  isPhoneRateLimitError,
   isValidNationalPhoneNumber,
+  mapPhoneAuthError,
   normalizePhoneDigits,
   parsePhoneNumberParts,
+  sendPhoneVerificationSms,
 } from '../services/phoneVerification';
-import {
-  sendWhatsAppVerificationCodeRemote,
-  verifyWhatsAppCodeRemote,
-} from '../services/whatsappVerification';
 
 type Step = 'phone' | 'send' | 'code';
 
-const RESEND_COOLDOWN_SECONDS = 60;
+const RESEND_COOLDOWN_SECONDS = 3 * 60;
 
 function formatResendCooldown(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
-  return mins > 0 ? `${mins}:${secs.toString().padStart(2, '0')}` : `${secs}s`;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 interface PhoneVerificationFormProps {
@@ -29,6 +33,7 @@ interface PhoneVerificationFormProps {
   lockPhone?: boolean;
   /**
    * @deprecated Auto-send is disabled — kept for API compatibility. Always treated as false.
+   * Manual "Send verification code" only.
    */
   autoSend?: boolean;
   submitLabel?: string;
@@ -44,9 +49,11 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   onVerified,
   onCancel,
 }) => {
+  // Auto-send intentionally disabled — prevents double SMS / rate limits.
   void _autoSend;
 
   const lockedParts = useMemo(() => parsePhoneNumberParts(initialPhone), [initialPhone]);
+  const lockedPhoneValid = isValidNationalPhoneNumber(lockedParts.nationalNumber);
   const normalizedInitialPhone = useMemo(
     () => normalizePhoneDigits(initialPhone),
     [initialPhone],
@@ -61,10 +68,14 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
-  const phoneDigitsRef = useRef('');
+  const sessionRef = useRef<PhoneVerificationSession | null>(null);
+  const phoneE164Ref = useRef('');
   const prevPhoneRef = useRef(normalizedInitialPhone);
   const sendRequestIdRef = useRef(0);
   const sendInFlightRef = useRef(false);
+
+  // Do not destroy reCAPTCHA on unmount — Strict Mode remounts would kill an in-flight send.
+  // sendPhoneVerificationSms owns create/destroy per attempt.
 
   useEffect(() => {
     const phoneChanged = prevPhoneRef.current !== normalizedInitialPhone;
@@ -78,11 +89,12 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     if (phoneChanged) {
       sendRequestIdRef.current += 1;
       sendInFlightRef.current = false;
+      sessionRef.current = null;
       setCode('');
       setError(null);
       setResendCooldown(0);
       setIsSending(false);
-      phoneDigitsRef.current = '';
+      phoneE164Ref.current = '';
     }
 
     if (lockPhone) {
@@ -100,22 +112,29 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     return () => window.clearInterval(timer);
   }, [resendCooldown]);
 
+  // Restore persisted Firebase rate-limit cooldown across reloads.
+  useEffect(() => {
+    const parts = lockPhone
+      ? lockedParts
+      : { countryCode, nationalNumber };
+    if (!isValidNationalPhoneNumber(parts.nationalNumber)) return;
+    const phoneE164 = buildPhoneE164FromParts(parts.countryCode, parts.nationalNumber);
+    const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
+    if (remaining > 0) {
+      setResendCooldown((prev) => Math.max(prev, remaining));
+    }
+  }, [
+    countryCode,
+    nationalNumber,
+    lockPhone,
+    lockedParts,
+  ]);
+
   const activeCountryCode = lockPhone ? lockedParts.countryCode : countryCode;
   const activeNationalNumber = lockPhone ? lockedParts.nationalNumber : nationalNumber;
   const sendBlocked = isSending || resendCooldown > 0;
 
-  const resolvePhoneDigits = () => {
-    if (phoneDigitsRef.current) return phoneDigitsRef.current;
-    const digits = buildPhoneDigits(activeCountryCode, activeNationalNumber);
-    phoneDigitsRef.current = digits;
-    return digits;
-  };
-
-  const handlePhoneChange = ({
-    fullDigits,
-    countryCode: nextCountryCode,
-    nationalNumber: nextNational,
-  }: {
+  const handlePhoneChange = ({ fullDigits, countryCode: nextCountryCode, nationalNumber: nextNational }: {
     fullDigits: string;
     countryCode: string;
     nationalNumber: string;
@@ -124,6 +143,23 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     setCountryCode(nextCountryCode);
     setNationalNumber(nextNational);
     setError(null);
+  };
+
+  const resolvePhoneE164 = () => {
+    if (phoneE164Ref.current) return phoneE164Ref.current;
+    const phoneE164 = buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
+    phoneE164Ref.current = phoneE164;
+    return phoneE164;
+  };
+
+  const applySendFailure = (err: unknown, phoneE164: string) => {
+    setError(mapPhoneAuthError(err, phoneE164));
+    if (isPhoneRateLimitError(err)) {
+      const remaining = getPhoneRateLimitRemainingSeconds(phoneE164);
+      setResendCooldown(
+        remaining > 0 ? remaining : PHONE_RATE_LIMIT_COOLDOWN_SECONDS,
+      );
+    }
   };
 
   const handleSendCode = async (e: React.FormEvent) => {
@@ -137,26 +173,22 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
       return;
     }
 
-    const digits = buildPhoneDigits(activeCountryCode, activeNationalNumber);
-    phoneDigitsRef.current = digits;
+    const phoneE164 = buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
+    phoneE164Ref.current = phoneE164;
 
     const requestId = ++sendRequestIdRef.current;
     sendInFlightRef.current = true;
     setIsSending(true);
     try {
-      const result = await sendWhatsAppVerificationCodeRemote(digits);
+      const session = await sendPhoneVerificationSms(phoneE164);
       if (requestId !== sendRequestIdRef.current) return;
-      if (result.alreadyVerified) {
-        const e164 = buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
-        await onVerified(e164, digits);
-        return;
-      }
+      sessionRef.current = session;
       setStep('code');
       setCode('');
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
       if (requestId !== sendRequestIdRef.current) return;
-      setError(err instanceof Error ? err.message : 'Could not send WhatsApp code.');
+      applySendFailure(err, phoneE164);
     } finally {
       if (requestId === sendRequestIdRef.current) {
         sendInFlightRef.current = false;
@@ -171,26 +203,24 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
     const trimmedCode = code.replace(/\D/g, '');
     if (trimmedCode.length < 6) {
-      setError('Enter the 6-digit code from WhatsApp.');
+      setError('Enter the 6-digit code from your SMS.');
       return;
     }
 
-    const digits = resolvePhoneDigits();
-    if (!digits) {
-      setError('Phone number missing. Go back and try again.');
+    if (!sessionRef.current) {
+      setError('Verification session expired. Request a new code.');
       setStep(lockPhone ? 'send' : 'phone');
       return;
     }
 
     setIsConfirming(true);
     try {
-      const verified = await verifyWhatsAppCodeRemote(trimmedCode, digits);
-      const e164 =
-        verified.phoneE164 ||
-        buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
-      await onVerified(e164, verified.phone || digits);
+      const verifiedE164 = await confirmPhoneVerificationCode(sessionRef.current, trimmedCode);
+      const digits = normalizePhoneDigits(verifiedE164 || phoneE164Ref.current);
+      await onVerified(verifiedE164 || phoneE164Ref.current, digits);
+      sessionRef.current = null;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Verification failed.');
+      setError(mapPhoneAuthError(err));
     } finally {
       setIsConfirming(false);
     }
@@ -204,11 +234,13 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
     sendRequestIdRef.current += 1;
     sendInFlightRef.current = false;
+    sessionRef.current = null;
+    destroyRecaptcha();
     setStep('phone');
     setCode('');
     setError(null);
     setResendCooldown(0);
-    phoneDigitsRef.current = '';
+    phoneE164Ref.current = '';
   };
 
   const handleResendCode = async () => {
@@ -219,14 +251,15 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     sendInFlightRef.current = true;
     setIsSending(true);
     try {
-      const digits = resolvePhoneDigits();
-      await sendWhatsAppVerificationCodeRemote(digits);
+      const phoneE164 = resolvePhoneE164();
+      const session = await sendPhoneVerificationSms(phoneE164);
       if (requestId !== sendRequestIdRef.current) return;
+      sessionRef.current = session;
       setCode('');
       setResendCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
       if (requestId !== sendRequestIdRef.current) return;
-      setError(err instanceof Error ? err.message : 'Could not resend WhatsApp code.');
+      applySendFailure(err, resolvePhoneE164());
     } finally {
       if (requestId === sendRequestIdRef.current) {
         sendInFlightRef.current = false;
@@ -235,10 +268,9 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
     }
   };
 
-  const displayPhoneE164 =
-    buildPhoneE164FromParts(activeCountryCode, activeNationalNumber) ||
-    (phoneDigitsRef.current ? `+${phoneDigitsRef.current}` : '');
+  const displayPhoneE164 = phoneE164Ref.current || buildPhoneE164FromParts(activeCountryCode, activeNationalNumber);
 
+  // lockPhone must never render a second phone input — only send/code UI.
   const visibleStep = lockPhone ? (step === 'phone' ? 'send' : step) : step;
 
   const sendButtonLabel = () => {
@@ -246,32 +278,35 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
       return (
         <>
           <Loader2 size={18} className="animate-spin" />
-          Sending on WhatsApp...
+          Sending code...
         </>
       );
     }
     if (resendCooldown > 0) {
       return (
         <>
-          <MessageSquare size={18} />
+          <Phone size={18} />
           Try again in {formatResendCooldown(resendCooldown)}
         </>
       );
     }
     return (
       <>
-        <MessageSquare size={18} />
-        Send WhatsApp code
+        <Phone size={18} />
+        Send verification code
       </>
     );
   };
 
   return (
     <div className="space-y-5">
-      <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-xs font-bold leading-relaxed">
-        Codes are sent on <span className="font-black">WhatsApp</span> — make sure this number
-        has WhatsApp installed.
-      </div>
+      {isLocalhostPhoneAuthBlocked() && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-bold leading-relaxed">
+          Phone SMS does not work on <code className="font-mono">localhost</code>. Use{' '}
+          <code className="font-mono">http://127.0.0.1:{window.location.port || '3000'}</code>{' '}
+          in your browser instead.
+        </div>
+      )}
 
       {visibleStep === 'phone' ? (
         <form onSubmit={handleSendCode} className="space-y-5">
@@ -279,7 +314,11 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
               Phone Number
             </label>
-            <PhoneNumberInput value={phoneDigits} onChange={handlePhoneChange} autoFocus />
+            <PhoneNumberInput
+              value={phoneDigits}
+              onChange={handlePhoneChange}
+              autoFocus
+            />
           </div>
 
           {error && <p className="text-sm font-bold text-red-600 text-center">{error}</p>}
@@ -296,7 +335,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
         <form onSubmit={handleSendCode} className="space-y-5">
           <div className="text-center">
             <p className="text-sm text-slate-500 font-medium">
-              We&apos;ll send a WhatsApp code to{' '}
+              We&apos;ll text a verification code to{' '}
               <span className="font-bold text-slate-800">{displayPhoneE164}</span>
             </p>
             {onCancel && (
@@ -314,7 +353,7 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
 
           <button
             type="submit"
-            disabled={sendBlocked}
+            disabled={sendBlocked || (lockPhone && !lockedPhoneValid)}
             className="w-full flex items-center justify-center gap-2 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sendButtonLabel()}
@@ -324,15 +363,14 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
         <form onSubmit={handleConfirmCode} className="space-y-5">
           <div className="text-center">
             <p className="text-sm text-slate-500 font-medium">
-              Enter the 6-digit code we sent on WhatsApp to{' '}
-              <span className="font-bold text-slate-800">{displayPhoneE164}</span>
+              Enter the code sent to <span className="font-bold text-slate-800">{displayPhoneE164}</span>
             </p>
             <button
               type="button"
               onClick={handleChangeNumber}
               className="mt-1 text-xs font-bold text-blue-600 hover:text-blue-700"
             >
-              {lockPhone ? 'Cancel' : 'Change number'}
+              {lockPhone ? 'Edit phone number in profile' : 'Change number'}
             </button>
           </div>
 
@@ -340,24 +378,54 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
             <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
               Verification Code
             </label>
-            <input
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="000000"
-              className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-center text-2xl font-black tracking-[0.4em] text-slate-900 outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400"
-              autoFocus
-            />
+            <div className="relative">
+              <MessageSquare className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(e) => {
+                  setCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                  setError(null);
+                }}
+                placeholder="000000"
+                maxLength={6}
+                className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-900 text-center tracking-[0.3em] text-lg placeholder:text-slate-300 placeholder:tracking-normal focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400"
+                autoFocus
+                required
+                disabled={isSending}
+              />
+            </div>
           </div>
 
           {error && <p className="text-sm font-bold text-red-600 text-center">{error}</p>}
 
           <button
+            type="button"
+            onClick={() => void handleResendCode()}
+            disabled={sendBlocked}
+            className="w-full flex items-center justify-center gap-2 py-3 bg-white border border-slate-200 text-slate-700 rounded-2xl font-bold text-sm hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isSending ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                Sending new code...
+              </>
+            ) : (
+              <>
+                <RefreshCw size={16} />
+                {resendCooldown > 0
+                  ? `Request new code in ${formatResendCooldown(resendCooldown)}`
+                  : 'Request new code'}
+              </>
+            )}
+          </button>
+
+          <button
             type="submit"
-            disabled={isConfirming || code.replace(/\D/g, '').length < 6}
-            className="w-full flex items-center justify-center gap-2 py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isConfirming || code.length < 6 || isSending}
+            className="w-full flex items-center justify-center gap-2 py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-wider text-sm hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isConfirming ? (
               <>
@@ -365,25 +433,22 @@ const PhoneVerificationForm: React.FC<PhoneVerificationFormProps> = ({
                 Verifying...
               </>
             ) : (
-              <>
-                <Phone size={18} />
-                {submitLabel}
-              </>
+              submitLabel
             )}
           </button>
+        </form>
+      )}
 
+      {onCancel && (
+        <div className="text-center">
           <button
             type="button"
-            onClick={handleResendCode}
-            disabled={sendBlocked}
-            className="w-full flex items-center justify-center gap-2 py-3 text-sm font-bold text-slate-500 hover:text-slate-800 transition-colors disabled:opacity-40"
+            onClick={onCancel}
+            className="text-slate-400 font-bold text-sm hover:text-slate-600 transition-colors"
           >
-            <RefreshCw size={16} className={isSending ? 'animate-spin' : ''} />
-            {resendCooldown > 0
-              ? `Resend in ${formatResendCooldown(resendCooldown)}`
-              : 'Resend WhatsApp code'}
+            Cancel
           </button>
-        </form>
+        </div>
       )}
     </div>
   );

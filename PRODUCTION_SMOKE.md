@@ -1,6 +1,6 @@
 # Production smoke test (manual)
 
-Run on `https://novaspace.work` after a deploy you approve.
+Run on `https://novaspace.work` after a deploy you approve. Do not use bare `localhost` for phone SMS.
 
 ## 1. Signup
 
@@ -15,13 +15,12 @@ Run on `https://novaspace.work` after a deploy you approve.
 3. Log out and log back in.
 4. **Expect:** email stays Verified (green).
 
-## 3. Phone (WhatsApp OTP)
+## 3. Phone SMS
 
-1. Ensure WhatsApp secrets + approved Meta Authentication template (see `docs/WHATSAPP_SETUP.md`).
-2. Profile → Verify phone → **Send WhatsApp code**.
-3. Enter the 6-digit code from WhatsApp.
-4. Hard refresh.
-5. **Expect:** phone stays Verified; `verifyWhatsAppCode` wrote Firestore (client cannot forge the flag).
+1. Enter a valid national number and tap **Verify Phone Number**.
+2. Tap **Send** (manual), enter the SMS code.
+3. Hard refresh.
+4. **Expect:** phone stays Verified; `confirmPhoneVerified` wrote Firestore (client cannot forge the flag).
 
 ## 4. Book → cancel
 
